@@ -10,4 +10,5 @@ dependencies = [
     "nnsight>=0.4.8",
     "plotly>=6.2.0",
     "torch>=2.7.1",
+    "wandb>=0.20.1",
 ]
