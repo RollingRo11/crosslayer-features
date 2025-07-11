@@ -73,7 +73,6 @@ cc_config = {
     "model_name": "gpt2",
     "dtype": torch.float32,
     "ae_dim": 1000,
-    "num_tokens": int(4e8),
     "drop_bos": True
 }
 
@@ -317,7 +316,6 @@ class Buffer:
                 padding="max_length"
             )
 
-            # Add all tokens (they're already truncated/padded to context length)
             tokens.append(token_ids)
             count += 1
 
@@ -330,7 +328,6 @@ class Trainer:
         self.cfg = cfg
         self.model = model
         self.crosscoder = Crosscoder(cfg)
-        # Initialize buffer after crosscoder to ensure device is set
         self.buffer = Buffer(cfg)
         self.total_steps = cfg["num_tokens"] // cfg["batch_size"]
         self.use_wandb = use_wandb

@@ -6,17 +6,17 @@ def main():
     config = cc_config.copy()
 
     config.update({
-        "batch_size": 256,
+        "batch_size": 512,
         "buffer_mult": 32,
-        "num_tokens": int(1e5),
-        "model_batch_size": 4,
-        "log_interval": 5,
+        "num_tokens": int(5e5),
+        "model_batch_size": 16,
+        "log_interval": 10,
         "save_interval": 100,
-        "ae_dim": 256,
-        "context": 256,
+        "ae_dim": 512,
+        "context": 1024,
     })
 
-    print("=== CROSSCODER TRAINING ===")
+    print("--- CROSSCODER TRAINING ---")
     print(f"Device: {config['device']}")
     print(f"Batch size: {config['batch_size']}")
     print(f"AE dimension: {config['ae_dim']}")
@@ -34,22 +34,22 @@ def main():
         trainer.train()
 
     except KeyboardInterrupt:
-        print("\n⚠️  Training interrupted by user")
+        print("\nTraining interrupted by user")
         print("Saving checkpoint...")
         trainer.save()
 
     except Exception as e:
-        print(f"❌ Training failed: {e}")
+        print(f"Training failed: {e}")
         import traceback
         traceback.print_exc()
 
         try:
             trainer.save()
-            print("✅ Checkpoint saved despite error")
+            print("Checkpoint saved despite error")
         except:
-            print("❌ Could not save checkpoint")
+            print("Could not save checkpoint")
 
-    print("🎉 Training completed!")
+    print("Training completed!")
 
 if __name__ == "__main__":
     main()
