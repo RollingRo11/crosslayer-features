@@ -174,6 +174,13 @@ class SAEVisDashboard:
             'negative': negative_tokens
         }
     
+    def _create_simple_histogram(self, density: float) -> str:
+        """Create a simple text-based histogram"""
+        # Create a simple bar representation
+        bar_count = min(50, int(density * 1000))  # Scale density to bar count
+        bars = '█' * bar_count + '░' * (50 - bar_count)
+        return f"[{bars}]"
+    
     def get_neuron_alignment(self, feature_idx: int) -> Dict:
         """Get neuron alignment analysis"""
         decoder_weights = self.crosscoder.W_dec[feature_idx]  # (n_layers, d_model)
@@ -302,12 +309,12 @@ class SAEVisDashboard:
         positive_logits_html = ""
         for item in logits['positive']:
             token_display = item['token'].replace(' ', '&nbsp;').replace('<', '&lt;').replace('>', '&gt;')
-            positive_logits_html += f'<tr><td style="background: #e3f2fd; padding: 2px 4px; font-family: monospace;">{token_display}</td><td>+{item["score"]:.2f}</td></tr>'
+            positive_logits_html += f'<tr><td><span class="token-cell">{token_display}</span></td><td>+{item["score"]:.2f}</td></tr>'
         
         negative_logits_html = ""
         for item in logits['negative']:
             token_display = item['token'].replace(' ', '&nbsp;').replace('<', '&lt;').replace('>', '&gt;')
-            negative_logits_html += f'<tr><td style="background: #ffebee; padding: 2px 4px; font-family: monospace;">{token_display}</td><td>{item["score"]:.2f}</td></tr>'
+            negative_logits_html += f'<tr><td><span class="token-cell">{token_display}</span></td><td>{item["score"]:.2f}</td></tr>'
         
         # Create neuron alignment table
         alignment_html = ""
@@ -320,14 +327,14 @@ class SAEVisDashboard:
             tokens_html = ""
             for j, token in enumerate(example['tokens']):
                 if j == example['highlight_idx']:
-                    tokens_html += f'<span style="background: #ffeb3b; padding: 2px; font-weight: bold;">{token}</span>'
+                    tokens_html += f'<span class="highlight">{token}</span>'
                 else:
                     tokens_html += token
             
             examples_html += f"""
-            <div style="margin: 10px 0; padding: 10px; border: 1px solid #ddd;">
-                <div style="font-weight: bold; color: #d2691e;">Activation: {example['activation']:.3f}</div>
-                <div style="font-family: monospace; margin-top: 5px;">{tokens_html}</div>
+            <div class="activation-example">
+                <div class="activation-score">Activation: {example['activation']:.3f}</div>
+                <div class="activation-text">{tokens_html}</div>
             </div>
             """
         
@@ -337,22 +344,153 @@ class SAEVisDashboard:
         <head>
             <title>Feature {feature_idx} Dashboard</title>
             <style>
-                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 20px; }}
-                .header {{ background: #f5f5f5; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
-                .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 20px 0; }}
-                .stat-card {{ background: white; padding: 15px; border: 1px solid #ddd; border-radius: 8px; }}
-                .main-content {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }}
-                .section {{ background: white; padding: 20px; border: 1px solid #ddd; border-radius: 8px; }}
-                .section h3 {{ margin-top: 0; color: #333; }}
-                table {{ width: 100%; border-collapse: collapse; }}
-                th, td {{ text-align: left; padding: 4px 8px; border-bottom: 1px solid #eee; }}
-                th {{ background: #f9f9f9; font-weight: 600; }}
-                .positive {{ background: #e8f5e8; }}
-                .negative {{ background: #ffeee8; }}
-                .feature-title {{ font-size: 24px; font-weight: bold; color: #333; }}
-                .interpretation {{ font-style: italic; color: #666; margin-top: 10px; }}
-                .activation-viz {{ margin: 20px 0; }}
-                .examples {{ max-height: 400px; overflow-y: auto; }}
+                body {{ 
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+                    margin: 20px; 
+                    background: #f8f9fa;
+                }}
+                .header {{ 
+                    background: white; 
+                    padding: 20px; 
+                    border-radius: 8px; 
+                    margin-bottom: 20px;
+                    border: 1px solid #e0e0e0;
+                }}
+                .feature-title {{ 
+                    font-size: 24px; 
+                    font-weight: bold; 
+                    color: #333; 
+                    margin-bottom: 8px;
+                }}
+                .interpretation {{ 
+                    font-style: italic; 
+                    color: #666; 
+                }}
+                .main-layout {{ 
+                    display: grid; 
+                    grid-template-columns: 1fr 400px; 
+                    gap: 20px; 
+                    align-items: start;
+                }}
+                .left-column {{ 
+                    display: flex; 
+                    flex-direction: column; 
+                    gap: 20px;
+                }}
+                .right-column {{ 
+                    position: sticky; 
+                    top: 20px;
+                }}
+                .stats-row {{ 
+                    display: grid; 
+                    grid-template-columns: repeat(3, 1fr); 
+                    gap: 20px; 
+                    margin-bottom: 20px;
+                }}
+                .stat-card {{ 
+                    background: white; 
+                    padding: 15px; 
+                    border: 1px solid #e0e0e0; 
+                    border-radius: 8px; 
+                }}
+                .stat-card h4 {{ 
+                    margin: 0 0 10px 0; 
+                    color: #333; 
+                    font-size: 14px;
+                    font-weight: 600;
+                }}
+                .section {{ 
+                    background: white; 
+                    padding: 20px; 
+                    border: 1px solid #e0e0e0; 
+                    border-radius: 8px; 
+                }}
+                .section h3 {{ 
+                    margin: 0 0 15px 0; 
+                    color: #333; 
+                    font-size: 16px;
+                    font-weight: 600;
+                }}
+                .logits-row {{ 
+                    display: grid; 
+                    grid-template-columns: 1fr 1fr; 
+                    gap: 20px;
+                }}
+                .alignment-row {{ 
+                    display: grid; 
+                    grid-template-columns: 1fr 1fr; 
+                    gap: 20px;
+                }}
+                table {{ 
+                    width: 100%; 
+                    border-collapse: collapse; 
+                    font-size: 13px;
+                }}
+                th, td {{ 
+                    text-align: left; 
+                    padding: 6px 8px; 
+                    border-bottom: 1px solid #eee; 
+                }}
+                th {{ 
+                    background: #f8f9fa; 
+                    font-weight: 600; 
+                    color: #555;
+                }}
+                .token-cell {{ 
+                    font-family: 'Monaco', 'Menlo', monospace; 
+                    background: #f1f3f4; 
+                    padding: 2px 6px; 
+                    border-radius: 3px;
+                    font-size: 12px;
+                }}
+                .top-activations {{ 
+                    background: white; 
+                    border: 1px solid #e0e0e0; 
+                    border-radius: 8px; 
+                    padding: 20px;
+                }}
+                .top-activations h3 {{ 
+                    margin: 0 0 15px 0; 
+                    color: #333; 
+                    font-size: 16px;
+                    font-weight: 600;
+                }}
+                .activation-example {{ 
+                    margin: 15px 0; 
+                    padding: 15px; 
+                    background: #f8f9fa; 
+                    border-radius: 6px;
+                    border-left: 4px solid #4285f4;
+                }}
+                .activation-score {{ 
+                    font-weight: bold; 
+                    color: #d2691e; 
+                    font-size: 14px;
+                    margin-bottom: 8px;
+                }}
+                .activation-text {{ 
+                    font-family: 'Monaco', 'Menlo', monospace; 
+                    font-size: 13px;
+                    line-height: 1.4;
+                    color: #333;
+                }}
+                .highlight {{ 
+                    background: #ffeb3b; 
+                    padding: 2px 1px; 
+                    font-weight: bold;
+                    border-radius: 2px;
+                }}
+                .activation-histogram {{ 
+                    text-align: center; 
+                    margin: 15px 0;
+                }}
+                .hist-bar {{ 
+                    display: inline-block; 
+                    width: 3px; 
+                    background: #ff9800; 
+                    margin: 0 1px;
+                    vertical-align: bottom;
+                }}
             </style>
         </head>
         <body>
@@ -361,62 +499,69 @@ class SAEVisDashboard:
                 <div class="interpretation">Feature interpretation based on top activating tokens</div>
             </div>
             
-            <div class="stats">
-                <div class="stat-card">
-                    <h4>Auto-Interpretation</h4>
-                    <div>Score: {stats['max_activation']:.3f}</div>
-                    <div>{interpretation}</div>
-                </div>
-                <div class="stat-card">
-                    <h4>Activations</h4>
-                    <div>Density: {stats['density']:.4f}%</div>
-                    <div>Max: {stats['max_activation']:.3f}</div>
-                </div>
-                <div class="stat-card">
-                    <h4>Top Activations</h4>
-                    <div>Train Token Max Act: {stats['max_activation']:.2f}</div>
-                </div>
-            </div>
-            
-            <div class="main-content">
-                <div>
-                    <div class="section">
-                        <h3>Positive Logits</h3>
-                        <table>
-                            <thead><tr><th>Token</th><th>Score</th></tr></thead>
-                            <tbody>{positive_logits_html}</tbody>
-                        </table>
+            <div class="main-layout">
+                <div class="left-column">
+                    <div class="stats-row">
+                        <div class="stat-card">
+                            <h4>AUTO-INTERP. (SCORE = {stats['max_activation']:.3f})</h4>
+                            <div style="font-size: 13px; color: #666;">
+                                {interpretation}
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <h4>ACTIVATIONS (DENSITY = {stats['density']:.4f}%)</h4>
+                            <div class="activation-histogram">
+                                <!-- Simple ASCII-style histogram -->
+                                <div style="font-family: monospace; font-size: 10px; color: #666;">
+                                    {self._create_simple_histogram(stats['density'])}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <h4>TOP ACTIVATIONS</h4>
+                            <div style="font-size: 13px; color: #666;">
+                                <div>TRAIN TOKEN MAX ACT = {stats['max_activation']:.2f}</div>
+                            </div>
+                        </div>
                     </div>
                     
-                    <div class="section" style="margin-top: 20px;">
-                        <h3>Negative Logits</h3>
-                        <table>
-                            <thead><tr><th>Token</th><th>Score</th></tr></thead>
-                            <tbody>{negative_logits_html}</tbody>
-                        </table>
+                    <div class="logits-row">
+                        <div class="section">
+                            <h3>NEGATIVE LOGITS</h3>
+                            <table>
+                                <tbody>{negative_logits_html}</tbody>
+                            </table>
+                        </div>
+                        <div class="section">
+                            <h3>POSITIVE LOGITS</h3>
+                            <table>
+                                <tbody>{positive_logits_html}</tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <div class="alignment-row">
+                        <div class="section">
+                            <h3>NEURON ALIGNMENT</h3>
+                            <table>
+                                <thead><tr><th>Neuron</th><th>Value</th><th>% of L1</th></tr></thead>
+                                <tbody>{alignment_html}</tbody>
+                            </table>
+                        </div>
+                        <div class="section">
+                            <h3>CORRELATED NEURONS</h3>
+                            <div style="color: #666; font-style: italic; font-size: 13px;">
+                                Analysis not yet implemented
+                            </div>
+                        </div>
                     </div>
                 </div>
                 
-                <div>
-                    <div class="section">
-                        <h3>Neuron Alignment</h3>
-                        <table>
-                            <thead><tr><th>Neuron</th><th>Value</th><th>% of L1</th></tr></thead>
-                            <tbody>{alignment_html}</tbody>
-                        </table>
+                <div class="right-column">
+                    <div class="top-activations">
+                        <h3>TOP ACTIVATIONS</h3>
+                        {examples_html}
                     </div>
-                    
-                    <div class="section" style="margin-top: 20px;">
-                        <h3>Correlated Features</h3>
-                        <div style="color: #666; font-style: italic;">Analysis not yet implemented</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="section" style="margin-top: 20px;">
-                <h3>Top Activations</h3>
-                <div class="examples">
-                    {examples_html}
                 </div>
             </div>
         </body>
