@@ -144,24 +144,26 @@ class NNsightWrapper(nn.Module):
         """
         
         with self.model.trace(tokens) as tracer:
-            # Get the specific layer activation based on hook_point
-            if "mlp" in self.hook_point:
-                activation = self.model.transformer.h[self.hook_layer].mlp.output.save()
-            elif "attn" in self.hook_point:
-                activation = self.model.transformer.h[self.hook_layer].attn.output.save()
-            else:
-                # Default to residual stream
-                activation = self.model.transformer.h[self.hook_layer].output[0].save()
+            # For crosscoder, we need activations from ALL layers, not just one
+            layer_activations = []
+            for layer_idx in range(self.model.config.n_layer):
+                layer_out = self.model.transformer.h[layer_idx].output[0].save()
+                layer_activations.append(layer_out)
             
             # Get final residual stream (before unembedding)
             residual = self.model.transformer.h[-1].output[0].save()
             
             if return_logits:
                 logits = self.model.lm_head.output.save()
+        
+        # Stack all layer activations: [n_layers, batch, seq, d_model]
+        all_layer_acts = torch.stack(layer_activations, dim=0)
+        # Rearrange to [batch, seq, n_layers, d_model]
+        all_layer_acts = einops.rearrange(all_layer_acts, "n_layers batch seq d_model -> batch seq n_layers d_model")
                 
         if return_logits:
-            return logits.value, residual.value, activation.value
-        return residual.value, activation.value
+            return logits, residual, all_layer_acts
+        return residual, all_layer_acts
 
     @property
     def tokenizer(self):

@@ -13,7 +13,7 @@ from datasets import load_dataset
 
 # Import the adapted crosscoder-vis modules
 import sys
-sys.path.append(str(Path(__file__).parent / "crosscoder-vis"))
+sys.path.insert(0, str(Path(__file__).parent / "crosscoder-vis"))
 
 from sae_vis.data_config_classes import SaeVisConfig
 from sae_vis.data_storing_fns import SaeVisData
@@ -34,9 +34,15 @@ def load_crosscoder_from_checkpoint(checkpoint_path: Path):
     if isinstance(saved_cfg['dtype'], str):
         saved_cfg['dtype'] = getattr(torch, saved_cfg['dtype'].split('.')[-1])
     
+    # Get model info to set d_in correctly
+    if saved_cfg['model_name'] == 'gpt2':
+        d_in = 768  # GPT-2 embedding dimension
+    else:
+        d_in = saved_cfg.get('resid_dim', 768)
+    
     # Create crosscoder config
     crosscoder_cfg = CrossCoderConfig(
-        d_in=saved_cfg.get('resid_dim', 768),  # Default for GPT-2
+        d_in=d_in,
         d_hidden=saved_cfg['ae_dim']
     )
     
@@ -94,6 +100,10 @@ def create_dashboard(
     
     print(f"Loading model: {saved_cfg['model_name']}")
     model = LanguageModel(saved_cfg['model_name'], device_map="auto")
+    
+    # Move crosscoder to the same device as the model
+    device = next(model.parameters()).device
+    crosscoder = crosscoder.to(device)
     
     print(f"Getting sample tokens (n_samples={n_samples})")
     tokens = get_sample_tokens(model, n_samples=n_samples)

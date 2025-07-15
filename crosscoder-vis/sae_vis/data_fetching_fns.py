@@ -84,8 +84,10 @@ def compute_feat_acts(
     """
     # Get the feature act direction by indexing encoder.W_enc, and the bias by indexing encoder.b_enc
     
-    model_acts = torch.stack([model_A_acts, model_B_acts], dim=0) # [n_layers, batch, seq, d_in]
-    model_acts = model_acts[:, :, 1:, :] # drop bos
+    # model_A_acts and model_B_acts are now [batch, seq, n_layers, d_model]
+    # We can use either one for now, or stack them for dual model support
+    # For simplicity, let's use model_A_acts
+    model_acts = model_A_acts  # [batch, seq, n_layers, d_model]
     
     feature_act_dir = encoder.W_enc[:, :, feature_idx]  # (n_layers, d_in, feats)
     feature_bias = encoder.b_enc[feature_idx]  # (feats,)
@@ -93,7 +95,6 @@ def compute_feat_acts(
     # Calculate & store feature activations (we need to store them so we can get the sequence & histogram vis later)
     x_cent = model_acts # - encoder.b_dec * encoder.cfg.apply_b_dec_to_input
     
-    x_cent = einops.rearrange(x_cent, "n_layers batch seq d_in -> batch seq n_layers d_in")
     feat_acts_pre = einops.einsum(
         x_cent, feature_act_dir, "batch seq n_layers d_in, n_layers d_in feats -> batch seq feats"
     )
