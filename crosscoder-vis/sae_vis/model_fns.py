@@ -177,6 +177,10 @@ class NNsightWrapper(nn.Module):
         print("WARNING: Using fallback inference for materialized model")
         
         # Just run a simple forward pass to get the logits
+        # Ensure tokens are on the same device as the model
+        model_device = next(self.model.parameters()).device
+        tokens = tokens.to(model_device)
+        
         with torch.no_grad():
             outputs = self.model(tokens)
             if hasattr(outputs, 'logits'):
@@ -191,8 +195,10 @@ class NNsightWrapper(nn.Module):
         n_layers = self.model.config.n_layer if hasattr(self.model.config, 'n_layer') else 12
         
         # Create dummy layer activations (this is not ideal but allows the system to work)
-        all_layer_acts = torch.randn(batch_size, seq_len, n_layers, d_model, device=tokens.device)
-        residual = torch.randn(batch_size, seq_len, d_model, device=tokens.device)
+        # Make sure they're on the same device as the input tokens
+        device = tokens.device
+        all_layer_acts = torch.randn(batch_size, seq_len, n_layers, d_model, device=device)
+        residual = torch.randn(batch_size, seq_len, d_model, device=device)
         
         if return_logits:
             return logits, residual, all_layer_acts

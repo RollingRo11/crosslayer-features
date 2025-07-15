@@ -104,9 +104,11 @@ def get_sample_tokens(model: LanguageModel, n_samples: int = 100, context_length
         tokens.append(token_ids)
         count += 1
     
-    # Move all tokens to CPU to avoid device issues
+    # Move all tokens to the same device as the model
     all_tokens = torch.cat(tokens, dim=0)
-    return all_tokens.to('cpu')
+    # Get the device from the model parameter
+    device = next(model.parameters()).device
+    return all_tokens.to(device)
 
 def create_dashboard(
     checkpoint_path: Path,
@@ -121,13 +123,13 @@ def create_dashboard(
     crosscoder, saved_cfg = load_crosscoder_from_checkpoint(checkpoint_path)
     
     print(f"Loading model: {saved_cfg['model_name']}")
-    # Force load model on CPU to avoid meta tensors
+    # Choose device based on availability
     import torch
     import os
-    # Disable MPS entirely to avoid placeholder storage issues
+    # Disable MPS entirely to avoid placeholder storage issues on macOS
     os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
-    # Force CPU device to avoid MPS issues with placeholder storage
-    available_device = 'cpu'
+    # Use CUDA if available, otherwise CPU
+    available_device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"DEBUG: Using device: {available_device}")
     
     # Try different approaches to avoid meta tensors
