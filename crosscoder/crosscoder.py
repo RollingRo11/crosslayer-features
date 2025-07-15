@@ -10,6 +10,7 @@ from pathlib import Path
 import tqdm
 import json
 from datasets import load_dataset
+from torch.nn.utils import clip_grad_norm_
 
 # test
 model = nnsight.LanguageModel("gpt2", device_map="auto")
@@ -67,23 +68,27 @@ class Crosscoder(nn.Module):
 
         self.W_enc = nn.Parameter(
             torch.empty(
-                self.num_layers, self.resid_dim, self.ae_dim
+                self.num_layers, self.resid_dim, self.ae_dim, dtype=self.dtype
             )
         )
 
         self.W_dec = nn.Parameter(
             torch.empty(
-                self.ae_dim, self.num_layers, self.resid_dim
+                self.ae_dim, self.num_layers, self.resid_dim, dtype=self.dtype
             )
         )
 
         nn.init.kaiming_uniform_(self.W_enc, a=1)
         nn.init.kaiming_uniform_(self.W_dec, a=1)
 
-        self.W_dec = nn.utils.weight_norm(nn.Linear(self.ae_dim, self.num_layers * self.resid_dim, bias=False), dim=0) # type: ignore
-
+        dec_init_norm = 0.005
         self.W_dec.data = (
-            self.W_dec.data / self.W_dec.data.norm(dim=-1, keepdim=True) * 0.5
+            self.W_dec.data / self.W_dec.data.norm(dim=-1, keepdim=True) * dec_init_norm
+        )
+
+        self.W_enc.data = einops.rearrange(
+            self.W_dec.data.clone(),
+            "ae_dim n_layers d_model -> n_layers d_model ae_dim",
         )
 
         self.b_enc = nn.Parameter(torch.zeros(self.ae_dim, dtype=self.dtype))
@@ -114,7 +119,7 @@ class Crosscoder(nn.Module):
             self.W_dec,
             "... ae_dim, ae_dim n_layers d_model -> ... n_layers d_model"
         )
-        acts_dec = F.layer_norm(acts_dec, acts_dec.shape[-1:])
+
         return acts_dec + self.b_dec
 
     def forward(self, x):
@@ -204,6 +209,17 @@ class Buffer:
         ).to(cfg["device"])
         self.pointer = 0
         self.first = True
+
+        # Add normalization factor for GPT-2
+        self.normalisation_factor = torch.tensor(
+            [
+                1.8281, 2.0781, 2.2031, 2.4062, 2.5781, 2.8281,
+                3.1562, 3.6875, 4.3125, 5.4062, 7.8750, 16.5000,
+            ],
+            device=cfg["device"],
+            dtype=torch.float32,
+        )
+
         self.refresh()
 
     @torch.no_grad()
@@ -251,6 +267,9 @@ class Buffer:
         # Get batch of activations
         batch = self.buffer[self.pointer:self.pointer + self.cfg["batch_size"]]
         self.pointer += self.cfg["batch_size"]
+
+        # Apply normalization - this is the key missing piece!
+        batch = batch.float() / self.normalisation_factor[None, :, None]
 
         return batch.to(self.cfg["device"])
 
@@ -333,6 +352,7 @@ class Trainer:
         loss = losses.l2_loss + self.get_l1_coeff() * losses.l1_loss
         loss.backward()
 
+        clip_grad_norm_(self.crosscoder.parameters(), max_norm=1.0)
         self.optimizer.step()
         self.scheduler.step()
         self.optimizer.zero_grad()
