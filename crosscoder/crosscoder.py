@@ -16,60 +16,21 @@ model = nnsight.LanguageModel("gpt2", device_map="auto")
 config = model.config
 model_config = config.to_dict() # type: ignore
 
-"""
-GPT2Config {
-  "activation_function": "gelu_new",
-  "architectures": [
-    "GPT2LMHeadModel"
-  ],
-  "attn_pdrop": 0.1,
-  "bos_token_id": 50256,
-  "embd_pdrop": 0.1,
-  "eos_token_id": 50256,
-  "initializer_range": 0.02,
-  "layer_norm_epsilon": 1e-05,
-  "model_type": "gpt2",
-  "n_ctx": 1024,
-  "n_embd": 768,
-  "n_head": 12,
-  "n_inner": null,
-  "n_layer": 12,
-  "n_positions": 1024,
-  "reorder_and_upcast_attn": false,
-  "resid_pdrop": 0.1,
-  "scale_attn_by_inverse_layer_idx": false,
-  "scale_attn_weights": true,
-  "summary_activation": null,
-  "summary_first_dropout": 0.1,
-  "summary_proj_to_labels": true,
-  "summary_type": "cls_index",
-  "summary_use_proj": true,
-  "task_specific_params": {
-    "text-generation": {
-      "do_sample": true,
-      "max_length": 50
-    }
-  },
-  "transformers_version": "4.53.0",
-  "use_cache": true,
-  "vocab_size": 50257
-}
-"""
 
 cc_config = {
     "seed": 51,
-    "batch_size": 512, # number of activations processed in each training step
-    "buffer_mult": 32, # multiplier for buffer size
-    "lr": 2e-5, # learning rate for AdamW
-    "num_tokens": int(5e5), # total number of tokens to process during the training run
+    "batch_size": 2048, # number of activations processed in each training step
+    "buffer_mult": 256, # multiplier for buffer size
+    "lr": 1e4, # learning rate for AdamW
+    "num_tokens": int(4e8), # total number of tokens to process during the training run
     "l1_coefficient": 2, # weight for l1 sparsity reg
     "beta1": 0.9,
     "beta2": 0.999,
     "context": 1024, # context length for the model
-    "device": "mps",
-    "model_batch_size": 16, # batch size when running the base model to generate activations
-    "log_interval": 10,
-    "save_interval": 100,
+    "device": "cuda",
+    "model_batch_size": 32, # batch size when running the base model to generate activations
+    "log_interval": 100,
+    "save_interval": 100000,
     "model_name": "gpt2",
     "dtype": torch.float32,
     "ae_dim": 1000, # autoencoder dimension
@@ -77,20 +38,6 @@ cc_config = {
     "total_steps": 100000
 }
 
- # config.update({
- #     "seed": 51,
- #     "batch_size": 512,
- #     "buffer_mult": 32,
- #     "num_tokens": int(5e5),
- #     "model_batch_size": 16,
- #     "log_interval": 10,
- #     "save_interval": 100,
- #     "ae_dim": 512,
- #     "context": 1024,
- # })
- #
- #
- #
 SAVE_DIR = Path("./saves")
 
 
@@ -133,8 +80,10 @@ class Crosscoder(nn.Module):
         nn.init.kaiming_uniform_(self.W_enc, a=1)
         nn.init.kaiming_uniform_(self.W_dec, a=1)
 
+        self.W_dec = nn.utils.weight_norm(nn.Linear(self.ae_dim, self.num_layers * self.resid_dim, bias=False), dim=0) # type: ignore
+
         self.W_dec.data = (
-            self.W_dec.data / self.W_dec.data.norm(dim=-1, keepdim=True) * 0.1
+            self.W_dec.data / self.W_dec.data.norm(dim=-1, keepdim=True) * 0.5
         )
 
         self.b_enc = nn.Parameter(torch.zeros(self.ae_dim, dtype=self.dtype))
@@ -165,6 +114,7 @@ class Crosscoder(nn.Module):
             self.W_dec,
             "... ae_dim, ae_dim n_layers d_model -> ... n_layers d_model"
         )
+        acts_dec = F.layer_norm(acts_dec, acts_dec.shape[-1:])
         return acts_dec + self.b_dec
 
     def forward(self, x):
@@ -249,7 +199,7 @@ class Buffer:
 
         self.buffer = torch.zeros(
             (self.buffer_size, self.modelcfg["n_layer"], self.modelcfg["n_embd"]),
-            dtype = torch.bfloat16,
+            dtype = torch.float32,
             requires_grad=False,
         ).to(cfg["device"])
         self.pointer = 0
