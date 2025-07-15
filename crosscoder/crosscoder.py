@@ -22,7 +22,7 @@ cc_config = {
     "seed": 51,
     "batch_size": 2048, # number of activations processed in each training step
     "buffer_mult": 256, # multiplier for buffer size
-    "lr": 1e4, # learning rate for AdamW
+    "lr": 1e-4, # learning rate for AdamW
     "num_tokens": int(4e8), # total number of tokens to process during the training run
     "l1_coefficient": 2, # weight for l1 sparsity reg
     "beta1": 0.9,
