@@ -273,6 +273,16 @@ def parse_feature_data(
             relative_decoder_strength_chat = feature_resid_dir_B_norms / (feature_resid_dir_A_norms + feature_resid_dir_B_norms) # [feats 1]
 
             relative_decoder_strength = torch.cat([relative_decoder_strength_base, relative_decoder_strength_chat], dim=1) # [feats 2]
+            
+            # Debug: Check if tensor is meta
+            print(f"DEBUG: relative_decoder_strength device: {relative_decoder_strength.device}")
+            print(f"DEBUG: relative_decoder_strength is_meta: {relative_decoder_strength.is_meta}")
+            
+            # Try to materialize if it's meta
+            if relative_decoder_strength.is_meta:
+                print("DEBUG: Tensor is meta, trying to materialize...")
+                relative_decoder_strength = relative_decoder_strength.to('cpu')
+            
             feature_tables_data.update(
                 relative_decoder_strength_indices=[["Base", "Chat"] for _ in range(len(feature_indices))], # TODO: maybe make this more general
                 relative_decoder_strength_values=relative_decoder_strength.detach().cpu().tolist(), # [feats 2]
