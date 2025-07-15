@@ -58,25 +58,39 @@ GPT2Config {
 
 cc_config = {
     "seed": 51,
-    "batch_size": 2048,
-    "buffer_mult": 512,
-    "lr": 2e-5,
-    "num_tokens": int(4e8),
-    "l1_coefficient": 2,
+    "batch_size": 512, # number of activations processed in each training step
+    "buffer_mult": 32, # multiplier for buffer size
+    "lr": 2e-5, # learning rate for AdamW
+    "num_tokens": int(5e5), # total number of tokens to process during the training run
+    "l1_coefficient": 2, # weight for l1 sparsity reg
     "beta1": 0.9,
     "beta2": 0.999,
-    "context": 1024,
+    "context": 1024, # context length for the model
     "device": "mps",
-    "model_batch_size": 32,
-    "log_interval": 100,
-    "save_interval": 100000,
+    "model_batch_size": 16, # batch size when running the base model to generate activations
+    "log_interval": 10,
+    "save_interval": 100,
     "model_name": "gpt2",
     "dtype": torch.float32,
-    "ae_dim": 1000,
-    "drop_bos": True
+    "ae_dim": 1000, # autoencoder dimension
+    "drop_bos": True, # whether or not to drop the beginning of sentence token,
+    "total_steps": 100000
 }
 
-
+ # config.update({
+ #     "seed": 51,
+ #     "batch_size": 512,
+ #     "buffer_mult": 32,
+ #     "num_tokens": int(5e5),
+ #     "model_batch_size": 16,
+ #     "log_interval": 10,
+ #     "save_interval": 100,
+ #     "ae_dim": 512,
+ #     "context": 1024,
+ # })
+ #
+ #
+ #
 SAVE_DIR = Path("./saves")
 
 
@@ -244,8 +258,7 @@ class Buffer:
 
     @torch.no_grad()
     def refresh(self):
-        """Refill buffer with new activations using NNsight"""
-        print("Refreshing buffer with NNsight...")
+        print("Refreshing buffer...")
 
         tokens = self.get_tokens_batch()
 
@@ -329,7 +342,7 @@ class Trainer:
         self.model = model
         self.crosscoder = Crosscoder(cfg)
         self.buffer = Buffer(cfg)
-        self.total_steps = cfg["num_tokens"] // cfg["batch_size"]
+        self.total_steps = cfg["total_steps"]
         self.use_wandb = use_wandb
 
 

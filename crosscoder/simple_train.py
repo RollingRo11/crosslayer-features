@@ -5,17 +5,6 @@ from crosscoder import Trainer, cc_config, SAVE_DIR
 def main():
     config = cc_config.copy()
 
-    config.update({
-        "batch_size": 512,
-        "buffer_mult": 32,
-        "num_tokens": int(5e5),
-        "model_batch_size": 16,
-        "log_interval": 10,
-        "save_interval": 100,
-        "ae_dim": 512,
-        "context": 1024,
-    })
-
     print("--- CROSSCODER TRAINING ---")
     print(f"Device: {config['device']}")
     print(f"Batch size: {config['batch_size']}")
