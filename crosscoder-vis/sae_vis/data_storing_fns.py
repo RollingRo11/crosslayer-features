@@ -287,8 +287,17 @@ class LogitsATableData:
         max_value = max(
             max(top_logits[: cfg.n_rows]), -min(bottom_logits[: cfg.n_rows])
         )
+        
+        # Handle case where max_value is 0 or NaN to avoid division by zero
+        if max_value == 0 or np.isnan(max_value) or not np.isfinite(max_value):
+            max_value = 1.0  # Default to 1.0 to avoid division by zero
+        
         neg_bg_values = np.absolute(bottom_logits[: cfg.n_rows]) / max_value
         pos_bg_values = np.absolute(top_logits[: cfg.n_rows]) / max_value
+        
+        # Handle any remaining NaN values
+        neg_bg_values = np.nan_to_num(neg_bg_values, nan=0.0, posinf=1.0, neginf=0.0)
+        pos_bg_values = np.nan_to_num(pos_bg_values, nan=0.0, posinf=1.0, neginf=0.0)
 
         # Get the string tokens, using the decode function
         neg_str = to_str_tokens(decode_fn, bottom_token_ids[: cfg.n_rows])
@@ -306,18 +315,22 @@ class LogitsATableData:
 
         # Get data for the tables of pos/neg logits
         for i in range(len(neg_str)):
+            # Ensure color values are valid integers
+            neg_color_val = int(255*(1-neg_bg_values[i])) if np.isfinite(neg_bg_values[i]) else 255
+            pos_color_val = int(255*(1-pos_bg_values[i])) if np.isfinite(pos_bg_values[i]) else 255
+            
             data["negLogits"].append(
                 {
                     "symbol": unprocess_str_tok(neg_str[i]),
-                    "value": round(bottom_logits[i], 2),
-                    "color": f"rgba(255,{int(255*(1-neg_bg_values[i]))},{int(255*(1-neg_bg_values[i]))},0.5)",
+                    "value": round(bottom_logits[i], 2) if np.isfinite(bottom_logits[i]) else 0.0,
+                    "color": f"rgba(255,{neg_color_val},{neg_color_val},0.5)",
                 }
             )
             data["posLogits"].append(
                 {
                     "symbol": unprocess_str_tok(pos_str[i]),
-                    "value": round(top_logits[i], 2),
-                    "color": f"rgba({int(255*(1-pos_bg_values[i]))},{int(255*(1-pos_bg_values[i]))},255,0.5)",
+                    "value": round(top_logits[i], 2) if np.isfinite(top_logits[i]) else 0.0,
+                    "color": f"rgba({pos_color_val},{pos_color_val},255,0.5)",
                 }
             )
 
@@ -356,8 +369,17 @@ class LogitsBTableData:
         max_value = max(
             max(top_logits[: cfg.n_rows]), -min(bottom_logits[: cfg.n_rows])
         )
+        
+        # Handle case where max_value is 0 or NaN to avoid division by zero
+        if max_value == 0 or np.isnan(max_value) or not np.isfinite(max_value):
+            max_value = 1.0  # Default to 1.0 to avoid division by zero
+        
         neg_bg_values = np.absolute(bottom_logits[: cfg.n_rows]) / max_value
         pos_bg_values = np.absolute(top_logits[: cfg.n_rows]) / max_value
+        
+        # Handle any remaining NaN values
+        neg_bg_values = np.nan_to_num(neg_bg_values, nan=0.0, posinf=1.0, neginf=0.0)
+        pos_bg_values = np.nan_to_num(pos_bg_values, nan=0.0, posinf=1.0, neginf=0.0)
 
         # Get the string tokens, using the decode function
         neg_str = to_str_tokens(decode_fn, bottom_token_ids[: cfg.n_rows])
@@ -375,18 +397,22 @@ class LogitsBTableData:
 
         # Get data for the tables of pos/neg logits
         for i in range(len(neg_str)):
+            # Ensure color values are valid integers
+            neg_color_val = int(255*(1-neg_bg_values[i])) if np.isfinite(neg_bg_values[i]) else 255
+            pos_color_val = int(255*(1-pos_bg_values[i])) if np.isfinite(pos_bg_values[i]) else 255
+            
             data["negLogits"].append(
                 {
                     "symbol": unprocess_str_tok(neg_str[i]),
-                    "value": round(bottom_logits[i], 2),
-                    "color": f"rgba(255,{int(255*(1-neg_bg_values[i]))},{int(255*(1-neg_bg_values[i]))},0.5)",
+                    "value": round(bottom_logits[i], 2) if np.isfinite(bottom_logits[i]) else 0.0,
+                    "color": f"rgba(255,{neg_color_val},{neg_color_val},0.5)",
                 }
             )
             data["posLogits"].append(
                 {
                     "symbol": unprocess_str_tok(pos_str[i]),
-                    "value": round(top_logits[i], 2),
-                    "color": f"rgba({int(255*(1-pos_bg_values[i]))},{int(255*(1-pos_bg_values[i]))},255,0.5)",
+                    "value": round(top_logits[i], 2) if np.isfinite(top_logits[i]) else 0.0,
+                    "color": f"rgba({pos_color_val},{pos_color_val},255,0.5)",
                 }
             )
 
