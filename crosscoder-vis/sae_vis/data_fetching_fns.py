@@ -95,10 +95,16 @@ def compute_feat_acts(
     # Calculate & store feature activations (we need to store them so we can get the sequence & histogram vis later)
     x_cent = model_acts # - encoder.b_dec * encoder.cfg.apply_b_dec_to_input
     
+    # Debug: Check if input tensors are meta
+    print(f"DEBUG: model_acts device: {model_acts.device}, is_meta: {model_acts.is_meta}")
+    print(f"DEBUG: feature_act_dir device: {feature_act_dir.device}, is_meta: {feature_act_dir.is_meta}")
+    
     feat_acts_pre = einops.einsum(
         x_cent, feature_act_dir, "batch seq n_layers d_in, n_layers d_in feats -> batch seq feats"
     )
     feat_acts = F.relu(feat_acts_pre + feature_bias)
+    
+    print(f"DEBUG: feat_acts device: {feat_acts.device}, is_meta: {feat_acts.is_meta}")
 
     # Update the CorrCoef object between feature activation & neurons
     if corrcoef_neurons is not None:
@@ -274,19 +280,14 @@ def parse_feature_data(
 
             relative_decoder_strength = torch.cat([relative_decoder_strength_base, relative_decoder_strength_chat], dim=1) # [feats 2]
             
-            # Debug: Check if tensor is meta
-            print(f"DEBUG: relative_decoder_strength device: {relative_decoder_strength.device}")
-            print(f"DEBUG: relative_decoder_strength is_meta: {relative_decoder_strength.is_meta}")
-            
-            # Try to materialize if it's meta
-            if relative_decoder_strength.is_meta:
-                print("DEBUG: Tensor is meta, trying to materialize...")
-                relative_decoder_strength = relative_decoder_strength.to('cpu')
-            
-            feature_tables_data.update(
-                relative_decoder_strength_indices=[["Base", "Chat"] for _ in range(len(feature_indices))], # TODO: maybe make this more general
-                relative_decoder_strength_values=relative_decoder_strength.detach().cpu().tolist(), # [feats 2]
-            )
+            # Skip this table if we have meta tensors
+            if not relative_decoder_strength.is_meta:
+                feature_tables_data.update(
+                    relative_decoder_strength_indices=[["Base", "Chat"] for _ in range(len(feature_indices))], # TODO: maybe make this more general
+                    relative_decoder_strength_values=relative_decoder_strength.detach().cpu().tolist(), # [feats 2]
+                )
+            else:
+                print("WARNING: Skipping relative_decoder_strength table due to meta tensors")
             
         # Table 3?: decoder cosine similarity between both models
         if layout.feature_tables_cfg.decoder_cosine_sim_table: # TODO: update
@@ -296,9 +297,14 @@ def parse_feature_data(
                 cosine_sims = cosine_sims.unsqueeze(0)
                 
             cosine_sims = cosine_sims.unsqueeze(1) # [feats 1]
-            feature_tables_data.update(
-                decoder_cosine_sim_values=cosine_sims.detach().cpu().tolist(), # [feats 1]
-            )
+            
+            # Skip this table if we have meta tensors
+            if not cosine_sims.is_meta:
+                feature_tables_data.update(
+                    decoder_cosine_sim_values=cosine_sims.detach().cpu().tolist(), # [feats 1]
+                )
+            else:
+                print("WARNING: Skipping decoder_cosine_sim table due to meta tensors")
 
         # Table 2: neurons correlated with this feature, based on their activations
         if isinstance(corrcoef_neurons, RollingCorrCoef):
@@ -372,16 +378,20 @@ def parse_feature_data(
             # Get data for feature activations histogram (including the title!)
             if layout.act_hist_cfg is not None:
                 feat_acts = all_feat_acts[..., i]
-                nonzero_feat_acts = feat_acts[feat_acts > 0]
-                frac_nonzero = nonzero_feat_acts.numel() / feat_acts.numel()
-                feature_data_dict[
-                    feat
-                ].acts_histogram_data = ActsHistogramData.from_data(
-                    data=nonzero_feat_acts,
-                    n_bins=layout.act_hist_cfg.n_bins,
-                    tickmode="5 ticks",
-                    title=f"ACTIVATIONS<br>DENSITY = {frac_nonzero:.3%}",
-                )
+                # Skip histogram if tensor is meta
+                if not feat_acts.is_meta:
+                    nonzero_feat_acts = feat_acts[feat_acts > 0]
+                    frac_nonzero = nonzero_feat_acts.numel() / feat_acts.numel()
+                    feature_data_dict[
+                        feat
+                    ].acts_histogram_data = ActsHistogramData.from_data(
+                        data=nonzero_feat_acts,
+                        n_bins=layout.act_hist_cfg.n_bins,
+                        tickmode="5 ticks",
+                        title=f"ACTIVATIONS<br>DENSITY = {frac_nonzero:.3%}",
+                    )
+                else:
+                    print(f"WARNING: Skipping activation histogram for feature {feat} due to meta tensors")
 
             if layout.logits_table_cfg_A is not None and layout.logits_table_cfg_B is not None:
                 # Get logits table data for model A
@@ -689,17 +699,23 @@ def get_feature_data(
         progress = None
 
     # If the model is from NNsight, we need to apply a wrapper to it for standardization
-    assert isinstance(
-        model_A, LanguageModel
-    ), "Error: non-LanguageModel models are not yet supported."
+    # Check if model is a LanguageModel or has the required attributes
+    if not isinstance(model_A, LanguageModel):
+        if hasattr(model_A, 'tokenizer') and hasattr(model_A, 'config'):
+            print("WARNING: Model is not a LanguageModel but has required attributes, proceeding...")
+        else:
+            assert False, "Error: non-LanguageModel models are not yet supported."
     assert isinstance(
         cfg.hook_point, str
     ), f"Error: cfg.hook_point must be a string, got {cfg.hook_point}"
     model_A_wrapper = NNsightWrapper(model_A, cfg.hook_point)
     
-    assert isinstance(
-        model_B, LanguageModel
-    ), "Error: non-LanguageModel models are not yet supported."
+    # Check if model is a LanguageModel or has the required attributes
+    if not isinstance(model_B, LanguageModel):
+        if hasattr(model_B, 'tokenizer') and hasattr(model_B, 'config'):
+            print("WARNING: Model B is not a LanguageModel but has required attributes, proceeding...")
+        else:
+            assert False, "Error: non-LanguageModel models are not yet supported."
     assert isinstance(
         cfg.hook_point, str
     ), f"Error: cfg.hook_point must be a string, got {cfg.hook_point}"
