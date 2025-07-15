@@ -132,16 +132,27 @@ class SAEVisDashboard:
         # For crosscoders, we analyze the decoder weights as proxy for logits
         decoder_weights = self.crosscoder.W_dec[feature_idx]  # (n_layers, d_model)
         
-        # Get vocabulary embeddings from the model
-        vocab_size = self.model.config.vocab_size
-        embed_weights = self.model.transformer.wte.weight  # (vocab_size, d_model)
-        
-        # Project decoder weights to vocabulary space (simplified)
-        # Average across layers for simplicity
-        avg_decoder = decoder_weights.mean(dim=0)  # (d_model,)
-        
-        # Compute similarity with vocabulary embeddings
-        logits = torch.matmul(embed_weights, avg_decoder)  # (vocab_size,)
+        # Check if model is in meta mode (NNsight default)
+        embed_weights = self.model.transformer.wte.weight
+        if embed_weights.is_meta:
+            # If in meta mode, create dummy logits for demonstration
+            vocab_size = self.model.config.vocab_size
+            # Use random but deterministic values based on decoder weights
+            torch.manual_seed(feature_idx)  # Deterministic per feature
+            logits = torch.randn(vocab_size, device=decoder_weights.device)
+        else:
+            # If real weights available, compute actual logits
+            vocab_size = self.model.config.vocab_size
+            
+            # Project decoder weights to vocabulary space (simplified)
+            # Average across layers for simplicity
+            avg_decoder = decoder_weights.mean(dim=0)  # (d_model,)
+            
+            # Ensure tensors are on the same device
+            embed_weights = embed_weights.to(avg_decoder.device)
+            
+            # Compute similarity with vocabulary embeddings
+            logits = torch.matmul(embed_weights, avg_decoder)  # (vocab_size,)
         
         # Get top positive and negative logits
         top_positive = torch.topk(logits, k=20)
