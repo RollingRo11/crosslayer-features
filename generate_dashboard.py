@@ -99,7 +99,8 @@ def create_dashboard(
     crosscoder, saved_cfg = load_crosscoder_from_checkpoint(checkpoint_path)
     
     print(f"Loading model: {saved_cfg['model_name']}")
-    model = LanguageModel(saved_cfg['model_name'], device_map="auto")
+    # Load model without device_map to avoid meta tensors
+    model = LanguageModel(saved_cfg['model_name'])
     
     # Move crosscoder to the same device as the model
     device = next(model.parameters()).device

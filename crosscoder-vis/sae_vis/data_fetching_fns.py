@@ -275,7 +275,7 @@ def parse_feature_data(
             relative_decoder_strength = torch.cat([relative_decoder_strength_base, relative_decoder_strength_chat], dim=1) # [feats 2]
             feature_tables_data.update(
                 relative_decoder_strength_indices=[["Base", "Chat"] for _ in range(len(feature_indices))], # TODO: maybe make this more general
-                relative_decoder_strength_values=relative_decoder_strength.tolist(), # [feats 2]
+                relative_decoder_strength_values=relative_decoder_strength.detach().cpu().tolist(), # [feats 2]
             )
             
         # Table 3?: decoder cosine similarity between both models
@@ -287,7 +287,7 @@ def parse_feature_data(
                 
             cosine_sims = cosine_sims.unsqueeze(1) # [feats 1]
             feature_tables_data.update(
-                decoder_cosine_sim_values=cosine_sims.tolist(), # [feats 1]
+                decoder_cosine_sim_values=cosine_sims.detach().cpu().tolist(), # [feats 1]
             )
 
         # Table 2: neurons correlated with this feature, based on their activations
