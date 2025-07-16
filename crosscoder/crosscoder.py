@@ -24,7 +24,7 @@ cc_config = {
     "buffer_mult": 256, # multiplier for buffer size
     "lr": 1e-4, # learning rate for AdamW
     "num_tokens": int(4e8), # total number of tokens to process during the training run
-    "l1_coefficient": 2, # weight for l1 sparsity reg
+    "l1_coefficient": 0.5, # weight for l1 sparsity reg (reduced from 2.0)
     "beta1": 0.9,
     "beta2": 0.999,
     "context": 1024, # context length for the model
@@ -34,9 +34,9 @@ cc_config = {
     "save_interval": 100000,
     "model_name": "gpt2",
     "dtype": torch.float32,
-    "ae_dim": 1000, # autoencoder dimension
+    "ae_dim": 4000, # autoencoder dimension (increased from 1000)
     "drop_bos": True, # whether or not to drop the beginning of sentence token,
-    "total_steps": 100000
+    "total_steps": 500000 # increased from 100000
 }
 
 SAVE_DIR = Path("./saves")
@@ -210,15 +210,10 @@ class Buffer:
         self.pointer = 0
         self.first = True
 
-        # Add normalization factor for GPT-2
-        self.normalisation_factor = torch.tensor(
-            [
-                1.8281, 2.0781, 2.2031, 2.4062, 2.5781, 2.8281,
-                3.1562, 3.6875, 4.3125, 5.4062, 7.8750, 16.5000,
-            ],
-            device=cfg["device"],
-            dtype=torch.float32,
-        )
+        # Dynamic normalization will be computed per batch
+        self.layer_means = None
+        self.layer_stds = None
+        self.normalization_computed = False
 
         self.refresh()
 
@@ -259,6 +254,9 @@ class Buffer:
 
         self.pointer = 0
 
+        # Reset normalization flag to recompute with new data
+        self.normalization_computed = False
+
     @torch.no_grad()
     def next(self):
         if self.pointer + self.cfg["batch_size"] > len(self.buffer):
@@ -268,8 +266,23 @@ class Buffer:
         batch = self.buffer[self.pointer:self.pointer + self.cfg["batch_size"]]
         self.pointer += self.cfg["batch_size"]
 
-        # Apply normalization - this is the key missing piece!
-        batch = batch.float() / self.normalisation_factor[None, :, None]
+        # Apply dynamic normalization
+        batch = batch.float()
+
+        # Compute normalization statistics if not already done or periodically recompute
+        if not self.normalization_computed or self.pointer % (self.cfg["batch_size"] * 100) == 0:
+            # Use a larger sample for more stable statistics
+            sample_size = min(self.cfg["batch_size"] * 10, len(self.buffer))
+            sample_indices = torch.randperm(len(self.buffer))[:sample_size]
+            sample_batch = self.buffer[sample_indices]
+
+            self.layer_means = sample_batch.mean(dim=0, keepdim=True)  # Shape: (1, n_layers, d_model)
+            self.layer_stds = sample_batch.std(dim=0, keepdim=True)    # Shape: (1, n_layers, d_model)
+            self.normalization_computed = True
+            print(f"Computed normalization stats - means: {self.layer_means.mean():.4f}, stds: {self.layer_stds.mean():.4f}")
+
+        # Apply normalization
+        batch = (batch - self.layer_means) / (self.layer_stds + 1e-8)
 
         return batch.to(self.cfg["device"])
 
@@ -348,22 +361,32 @@ class Trainer:
         acts = self.buffer.next()
         # Ensure acts are on the right device and dtype
         acts = acts.float().to(self.cfg["device"])
+
+        # Get encoded activations for sparsity calculation
+        with torch.no_grad():
+            encoded_acts = self.crosscoder.encode(acts)
+
         losses = self.crosscoder.return_loss(acts)
         loss = losses.l2_loss + self.get_l1_coeff() * losses.l1_loss
         loss.backward()
 
-        clip_grad_norm_(self.crosscoder.parameters(), max_norm=1.0)
+        # Improved gradient clipping with monitoring
+        grad_norm = clip_grad_norm_(self.crosscoder.parameters(), max_norm=5.0)
         self.optimizer.step()
         self.scheduler.step()
         self.optimizer.zero_grad()
 
+        # Enhanced loss monitoring
         loss_dict = {
             "loss": loss.item(),
             "l2_loss": losses.l2_loss.item(),
             "l1_loss": losses.l1_loss.item(),
             "l0_loss": losses.l0_loss.item(),
             "l1_coeff": self.get_l1_coeff(),
-            "lr": self.scheduler.get_last_lr()[0]
+            "lr": self.scheduler.get_last_lr()[0],
+            "grad_norm": grad_norm.item(),
+            "sparsity": (encoded_acts > 0).float().mean().item(),
+            "reconstruction_mse": losses.l2_loss.item() / acts.numel()
         }
 
         self.step_counter += 1
@@ -372,7 +395,6 @@ class Trainer:
     def log(self, loss_dict):
         if self.use_wandb:
             wandb.log(loss_dict, step=self.step_counter)
-        print(loss_dict)
 
     def save(self):
         self.crosscoder.save()
@@ -386,6 +408,66 @@ class Trainer:
                 if i % self.cfg["log_interval"] == 0:
                     self.log(loss_dict)
                 if (i + 1) % self.cfg["save_interval"] == 0:
+                    print(f"Saving checkpoint at step {i+1}")
                     self.save()
+
+                # Periodic feature analysis
+                if i % (self.cfg["log_interval"] * 10) == 0 and i > 0:
+                    print(f"Analyzing feature quality at step {i}")
+                    try:
+                        analysis = self.analyze_feature_quality()
+                        print(f"  Mean sparsity: {analysis['mean_sparsity']:.3f}")
+                        print(f"  Dead features: {analysis['dead_features']}/{analysis['total_features']}")
+                        print(f"  Worst layer reconstruction error: {max(analysis['layer_reconstruction_errors']):.4f}")
+
+                        if self.use_wandb:
+                            wandb.log({
+                                'feature_analysis/mean_sparsity': analysis['mean_sparsity'],
+                                'feature_analysis/sparsity_std': analysis['sparsity_std'],
+                                'feature_analysis/dead_features': analysis['dead_features'],
+                                'feature_analysis/max_layer_error': max(analysis['layer_reconstruction_errors'])
+                            }, step=self.step_counter)
+                    except Exception as e:
+                        print(f"  Feature analysis failed: {e}")
+
+                # Early stopping check for numerical instability
+                if torch.isnan(torch.tensor(loss_dict['loss'])) or loss_dict['loss'] > 100:
+                    print(f"Training unstable at step {i}, stopping early")
+                    break
         finally:
             self.save()
+
+    def analyze_feature_quality(self, n_samples=1000):
+        """Analyze the quality of learned features during training"""
+        # Get a sample of activations
+        sample_acts = self.buffer.next()[:n_samples]
+
+        with torch.no_grad():
+            # Encode the activations
+            encoded = self.crosscoder.encode(sample_acts)
+
+            # Compute feature statistics
+            feature_means = encoded.mean(dim=0)
+            feature_stds = encoded.std(dim=0)
+            feature_sparsity = (encoded > 0).float().mean(dim=0)
+
+            # Find most and least active features
+            most_active = torch.argsort(feature_sparsity, descending=True)[:10]
+            least_active = torch.argsort(feature_sparsity, descending=False)[:10]
+
+            # Compute reconstruction quality
+            reconstructed = self.crosscoder.decode(encoded)
+            recon_error = F.mse_loss(reconstructed, sample_acts, reduction='none')
+            layer_recon_error = recon_error.mean(dim=[0, 2])  # Average over batch and d_model
+
+            analysis = {
+                'mean_sparsity': feature_sparsity.mean().item(),
+                'sparsity_std': feature_sparsity.std().item(),
+                'most_active_features': most_active.tolist(),
+                'least_active_features': least_active.tolist(),
+                'layer_reconstruction_errors': layer_recon_error.tolist(),
+                'dead_features': (feature_sparsity < 1e-6).sum().item(),
+                'total_features': len(feature_sparsity)
+            }
+
+            return analysis
