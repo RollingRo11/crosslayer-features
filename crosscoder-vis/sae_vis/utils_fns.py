@@ -170,6 +170,13 @@ def get_decode_html_safe_fn(
     tokenizer: PreTrainedTokenizerBase, html: bool = False
 ) -> Callable[[int | list[int]], str | list[str]]:
     vocab_dict = {v: k for k, v in tokenizer.vocab.items()}  # type: ignore
+    
+    # Define special tokens to filter out (EOS/BOS tokens)
+    special_tokens_to_filter = {
+        "<|endoftext|>", "<|startoftext|>", "<|bos|>", "<|eos|>", 
+        "<s>", "</s>", "[CLS]", "[SEP]", "[PAD]", "[UNK]", "[MASK]",
+        "<pad>", "<unk>", "<mask>", "<cls>", "<sep>", "<bos>", "<eos>"
+    }
 
     def decode(token_id: int | list[int]) -> str | list[str]:
         """
@@ -177,6 +184,9 @@ def get_decode_html_safe_fn(
         """
         if isinstance(token_id, int):
             str_tok = vocab_dict.get(token_id, "UNK")
+            # Filter out special tokens
+            if str_tok in special_tokens_to_filter:
+                return ""
             return process_str_tok(str_tok, html=html)
         else:
             if isinstance(token_id, torch.Tensor):
