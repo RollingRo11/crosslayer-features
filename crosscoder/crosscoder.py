@@ -24,7 +24,7 @@ cc_config = {
     "buffer_mult": 256, # multiplier for buffer size
     "lr": 1e-4, # learning rate for AdamW
     "num_tokens": int(4e8), # total number of tokens to process during the training run
-    "l1_coefficient": 0.5, # weight for l1 sparsity reg (reduced from 2.0)
+    "l1_coefficient": 2.5, # weight for l1 sparsity reg (reduced from 2.0)
     "beta1": 0.9,
     "beta2": 0.999,
     "context": 1024, # context length for the model
@@ -430,10 +430,6 @@ class Trainer:
                     except Exception as e:
                         print(f"  Feature analysis failed: {e}")
 
-                # Early stopping check for numerical instability
-                if torch.isnan(torch.tensor(loss_dict['loss'])) or loss_dict['loss'] > 100:
-                    print(f"Training unstable at step {i}, stopping early")
-                    break
         finally:
             self.save()
 
