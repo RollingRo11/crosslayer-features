@@ -22,7 +22,7 @@ cc_config = {
     "seed": 51,
     "batch_size": 2048, # number of activations processed in each training step
     "buffer_mult": 256, # multiplier for buffer size
-    "lr": 1e-4, # learning rate for AdamW
+    "lr": 5e-5, # learning rate for AdamW
     "num_tokens": int(4e8), # total number of tokens to process during the training run
     "l1_coefficient": 2.5, # weight for l1 sparsity reg (reduced from 2.0)
     "beta1": 0.9,
@@ -81,7 +81,7 @@ class Crosscoder(nn.Module):
         nn.init.kaiming_uniform_(self.W_enc, a=1)
         nn.init.kaiming_uniform_(self.W_dec, a=1)
 
-        dec_init_norm = 0.005
+        dec_init_norm = 0.08
         self.W_dec.data = (
             self.W_dec.data / self.W_dec.data.norm(dim=-1, keepdim=True) * dec_init_norm
         )
@@ -96,7 +96,6 @@ class Crosscoder(nn.Module):
             torch.zeros((self.num_layers, self.resid_dim), dtype=self.dtype)
         )
 
-        # Move to device
         self.to(cfg["device"])
 
     def encode(self, x, apply_act=True):
@@ -176,7 +175,6 @@ class Crosscoder(nn.Module):
             'cfg': self.cfg
         }, weight_path)
 
-        # Make config JSON serializable
         cfg_to_save = self.cfg.copy()
         cfg_to_save['dtype'] = str(cfg_to_save['dtype'])
 
@@ -210,7 +208,6 @@ class Buffer:
         self.pointer = 0
         self.first = True
 
-        # Dynamic normalization will be computed per batch
         self.layer_means = None
         self.layer_stds = None
         self.normalization_computed = False
@@ -245,16 +242,13 @@ class Buffer:
 
             all_acts.append(batch_acts)
 
-        # Concatenate all activations
         self.buffer = torch.cat(all_acts, dim=0)
 
-        # Shuffle for better training
         perm = torch.randperm(len(self.buffer))
         self.buffer = self.buffer[perm]
 
         self.pointer = 0
 
-        # Reset normalization flag to recompute with new data
         self.normalization_computed = False
 
     @torch.no_grad()
@@ -262,14 +256,11 @@ class Buffer:
         if self.pointer + self.cfg["batch_size"] > len(self.buffer):
             self.refresh()
 
-        # Get batch of activations
         batch = self.buffer[self.pointer:self.pointer + self.cfg["batch_size"]]
         self.pointer += self.cfg["batch_size"]
 
-        # Apply dynamic normalization
         batch = batch.float()
 
-        # Compute normalization statistics if not already done or periodically recompute
         if not self.normalization_computed or self.pointer % (self.cfg["batch_size"] * 100) == 0:
             # Use a larger sample for more stable statistics
             sample_size = min(self.cfg["batch_size"] * 10, len(self.buffer))
@@ -281,7 +272,7 @@ class Buffer:
             self.normalization_computed = True
             print(f"Computed normalization stats - means: {self.layer_means.mean():.4f}, stds: {self.layer_stds.mean():.4f}")
 
-        # Apply normalization
+        # NOTE for roha, change norm approach
         batch = (batch - self.layer_means) / (self.layer_stds + 1e-8)
 
         return batch.to(self.cfg["device"])
@@ -359,10 +350,8 @@ class Trainer:
 
     def step(self):
         acts = self.buffer.next()
-        # Ensure acts are on the right device and dtype
         acts = acts.float().to(self.cfg["device"])
 
-        # Get encoded activations for sparsity calculation
         with torch.no_grad():
             encoded_acts = self.crosscoder.encode(acts)
 
@@ -370,13 +359,11 @@ class Trainer:
         loss = losses.l2_loss + self.get_l1_coeff() * losses.l1_loss
         loss.backward()
 
-        # Improved gradient clipping with monitoring
         grad_norm = clip_grad_norm_(self.crosscoder.parameters(), max_norm=5.0)
         self.optimizer.step()
         self.scheduler.step()
         self.optimizer.zero_grad()
 
-        # Enhanced loss monitoring
         loss_dict = {
             "loss": loss.item(),
             "l2_loss": losses.l2_loss.item(),
@@ -411,7 +398,6 @@ class Trainer:
                     print(f"Saving checkpoint at step {i+1}")
                     self.save()
 
-                # Periodic feature analysis
                 if i % (self.cfg["log_interval"] * 10) == 0 and i > 0:
                     print(f"Analyzing feature quality at step {i}")
                     try:
@@ -435,23 +421,18 @@ class Trainer:
 
     def analyze_feature_quality(self, n_samples=1000):
         """Analyze the quality of learned features during training"""
-        # Get a sample of activations
         sample_acts = self.buffer.next()[:n_samples]
 
         with torch.no_grad():
-            # Encode the activations
             encoded = self.crosscoder.encode(sample_acts)
 
-            # Compute feature statistics
             feature_means = encoded.mean(dim=0)
             feature_stds = encoded.std(dim=0)
             feature_sparsity = (encoded > 0).float().mean(dim=0)
 
-            # Find most and least active features
             most_active = torch.argsort(feature_sparsity, descending=True)[:10]
             least_active = torch.argsort(feature_sparsity, descending=False)[:10]
 
-            # Compute reconstruction quality
             reconstructed = self.crosscoder.decode(encoded)
             recon_error = F.mse_loss(reconstructed, sample_acts, reduction='none')
             layer_recon_error = recon_error.mean(dim=[0, 2])  # Average over batch and d_model
