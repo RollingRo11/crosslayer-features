@@ -1,244 +1,206 @@
-import re
-from dataclasses import dataclass
-from typing import Literal, overload
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from jaxtyping import Float, Int
-from torch import Tensor
-from nnsight import LanguageModel
-import torch.nn as nn
 import einops
+import torch
+from datasets import load_dataset
+from datasets.arrow_dataset import Dataset
+from jaxtyping import Float
+from torch import Tensor
+import nnsight
+from nnsight import LanguageModel
 
-DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
+# Mock sae_lens if not available
+try:
+    from sae_lens import SAE, HookedSAETransformer, SAEConfig
+except ImportError:
+    class SAE:
+        pass
+    class HookedSAETransformer:
+        pass
+    class SAEConfig:
+        pass
 
-@dataclass
-class CrossCoderConfig:
-    """Class for storing configuration parameters for the CrossCoder"""
+from sae_vis.utils_fns import VocabType
 
-    d_in: int
-    d_hidden: int | None = None
-    dict_mult: int | None = None
-    n_layers: int = 12
-
-    l1_coeff: float = 3e-4
-
-    apply_b_dec_to_input: bool = False
-
-    def __post_init__(self):
-        assert (
-            int(self.d_hidden is None) + int(self.dict_mult is None) == 1
-        ), "Exactly one of d_hidden or dict_mult must be provided"
-        if (self.d_hidden is None) and isinstance(self.dict_mult, int):
-            self.d_hidden = self.d_in * self.dict_mult
-        elif (self.dict_mult is None) and isinstance(self.d_hidden, int):
-            #assert self.d_hidden % self.d_in == 0, "d_hidden must be a multiple of d_in"
-            self.dict_mult = self.d_hidden // self.d_in
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class CrossCoder(nn.Module):
-    def __init__(self, cfg: CrossCoderConfig):
-        super().__init__()
-        self.cfg = cfg
-
-        assert isinstance(cfg.d_hidden, int)
-
-        # W_enc has shape (n_layers, d_in, d_encoder), where d_encoder is a multiple of d_in (cause dictionary learning; overcomplete basis)
-        self.W_enc = nn.Parameter(
-            torch.nn.init.kaiming_uniform_(torch.empty(cfg.n_layers, cfg.d_in, cfg.d_hidden))
-        )
-        self.W_dec = nn.Parameter(
-            torch.nn.init.kaiming_uniform_(torch.empty(cfg.d_hidden, cfg.n_layers, cfg.d_in))
-        )
-        self.b_enc = nn.Parameter(torch.zeros(cfg.d_hidden))
-        self.b_dec = nn.Parameter(torch.zeros(cfg.n_layers, cfg.d_in))
-        self.W_dec.data[:] = self.W_dec / self.W_dec.norm(dim=-1, keepdim=True)
-
-    def forward(self, x: torch.Tensor):
-        # TODO: lots of this stuff is legacy SAE stuff that probably is wrong / unnecessary
-        x_cent = x - self.b_dec * self.cfg.apply_b_dec_to_input
-        x_enc = einops.einsum(
-            x_cent,
-            self.W_enc,
-            "... n_layers d_model, n_layers d_model d_hidden -> ... d_hidden",
-        )
-        acts = F.relu(x_enc + self.b_enc)
-        #x_reconstruct = acts @ self.W_dec + self.b_dec
-        x_reconstruct = einops.einsum(
-            acts,
-            self.W_dec,
-            "... d_hidden, d_hidden n_layers d_model -> ... n_layers d_model",
-        )
-        diff = x_reconstruct.float() - x.float()
-        squared_diff = diff.pow(2)
-        l2_per_batch = einops.reduce(squared_diff, 'batch n_layers d_model -> batch', 'sum')
-        l2_loss = l2_per_batch.mean()
-        #l2_loss = (x_reconstruct.float() - x.float()).pow(2).sum(-1).mean(0)
-        decoder_norms = self.W_dec.norm(dim=-1)
-        # decoder_norms: [d_hidden, n_layers]
-        total_decoder_norm = einops.reduce(decoder_norms, 'd_hidden n_layers -> d_hidden', 'sum')
-        l1_loss = (acts * total_decoder_norm[None, :]).sum(-1).mean(0)
-        loss = l2_loss + l1_loss
-        return loss, x_reconstruct, acts, l2_loss, l1_loss
-
-    @torch.no_grad()
-    def remove_parallel_component_of_grads(self):
-        W_dec_normed = self.W_dec / self.W_dec.norm(dim=-1, keepdim=True)
-        W_dec_grad_proj = (self.W_dec.grad * W_dec_normed).sum(
-            -1, keepdim=True
-        ) * W_dec_normed
-        self.W_dec.grad -= W_dec_grad_proj
-
-    def __repr__(self) -> str:
-        return f"CrossCoder(d_in={self.cfg.d_in}, dict_mult={self.cfg.dict_mult})"
-
-
-# # ==============================================================
-# # ! TRANSFORMERS
-# # This returns the activations & resid_pre as well (optionally)
-# # ==============================================================
-
-
-class NNsightWrapper(nn.Module):
+def to_resid_dir(
+    dir: Float[Tensor, "feats d"],
+    crosscoder,
+    model: LanguageModel,
+    input: bool = False,
+):
     """
-    This class wraps around & extends the NNsight model, so that we can make sure things like the forward
-    function have a standardized signature.
+    Converts a batch of feature directions to residual stream directions (i.e. for writing to the
+    model's residual stream). For example, if the SAE was trained on the residual stream then this
+    is just the identity function, but if the SAE was trained on the MLP activations or attn head
+    z-values then we return dir @ W_out or dir @ W_O.flatten(-2, -1) respectively.
+
+    We also have the `input` argument: if True then we'll be returning the reading direction rather
+    than writing direction (i.e. @ W_in or @ W_V.flatten(-2, -1) respectively).
     """
 
-    def __init__(self, model: LanguageModel, hook_point: str):
-        super().__init__()
-        self.model = model
-        self.hook_point = hook_point
-        
-        # Parse hook point to get layer information
-        layer_match = re.match(r"blocks\.(\d+)\.", hook_point)
-        assert layer_match, f"Error: expecting hook_point to be 'blocks.{{layer}}.{{...}}', but got {hook_point!r}"
-        self.hook_layer = int(layer_match.group(1))
-
-    @overload
-    def forward(
-        self,
-        tokens: Tensor,
-        return_logits: Literal[True],
-    ) -> tuple[Tensor, Tensor, Tensor]: ...
-
-    @overload
-    def forward(
-        self,
-        tokens: Tensor,
-        return_logits: Literal[False],
-    ) -> tuple[Tensor, Tensor]: ...
-
-    def forward(
-        self,
-        tokens: Int[Tensor, "batch seq"],
-        return_logits: bool = True,
-    ):
-        """
-        Inputs:
-            tokens: Int[Tensor, "batch seq"]
-                The input tokens, shape (batch, seq)
-            return_logits: bool
-                If True, returns (logits, residual, activation)
-                If False, returns (residual, activation)
-        """
-        
-        # Check if this is a proper NNsight model with trace functionality
-        if hasattr(self.model, 'trace') and hasattr(self.model, 'transformer'):
-            try:
-                with self.model.trace(tokens) as tracer:
-                    # For crosscoder, we need activations from ALL layers, not just one
-                    layer_activations = []
-                    for layer_idx in range(self.model.config.n_layer):
-                        layer_out = self.model.transformer.h[layer_idx].output[0].save()
-                        layer_activations.append(layer_out)
-                    
-                    # Get final residual stream (before unembedding)
-                    residual = self.model.transformer.h[-1].output[0].save()
-                    
-                    if return_logits:
-                        logits = self.model.lm_head.output.save()
-                
-                # Stack all layer activations: [n_layers, batch, seq, d_model]
-                all_layer_acts = torch.stack(layer_activations, dim=0)
-                # Rearrange to [batch, seq, n_layers, d_model]
-                all_layer_acts = einops.rearrange(all_layer_acts, "n_layers batch seq d_model -> batch seq n_layers d_model")
-                        
-                if return_logits:
-                    return logits, residual, all_layer_acts
-                return residual, all_layer_acts
-            except Exception as e:
-                print(f"WARNING: NNsight trace failed: {e}")
-                print("Falling back to direct model inference...")
-        
-        # Fallback for materialized models without proper trace functionality
-        # This is a simple forward pass that collects layer outputs
-        print("WARNING: Using fallback inference for materialized model")
-        
-        # Just run a simple forward pass to get the logits
-        # Ensure tokens are on the same device as the model
-        model_device = next(self.model.parameters()).device
-        tokens = tokens.to(model_device)
-        
-        with torch.no_grad():
-            outputs = self.model(tokens)
-            if hasattr(outputs, 'logits'):
-                logits = outputs.logits
-            else:
-                logits = outputs
-        
-        # For fallback, we'll create dummy layer activations
-        # This is not ideal but allows the system to work
-        batch_size, seq_len = tokens.shape
-        d_model = self.model.config.hidden_size if hasattr(self.model.config, 'hidden_size') else 768
-        n_layers = self.model.config.n_layer if hasattr(self.model.config, 'n_layer') else 12
-        
-        # Create dummy layer activations (this is not ideal but allows the system to work)
-        # Make sure they're on the same device as the input tokens
-        device = tokens.device
-        all_layer_acts = torch.randn(batch_size, seq_len, n_layers, d_model, device=device)
-        residual = torch.randn(batch_size, seq_len, d_model, device=device)
-        
-        if return_logits:
-            return logits, residual, all_layer_acts
-        return residual, all_layer_acts
-
-    @property
-    def tokenizer(self):
-        return self.model.tokenizer
-
-    @property
-    def W_U(self):
-        # lm_head.weight is typically [d_vocab, d_model], but we need [d_model, d_vocab]
-        return self.model.lm_head.weight.T
-
-    @property
-    def W_out(self):
-        # For NNsight, we need to access the transformer layers differently
-        return self.model.transformer.h[self.hook_layer].mlp.c_proj.weight
+    # For crosscoder, we work with residual stream directions
+    return dir
 
 
-def to_resid_dir(dir: Float[Tensor, "feats d_in"], model: NNsightWrapper):
+def resid_final_pre_layernorm_to_logits(x: Tensor, model: LanguageModel):
+    # Apply layer normalization
+    x = x - x.mean(-1, keepdim=True)  # [batch, pos, length]
+    scale = (x.pow(2).mean(-1, keepdim=True) + model.config.layer_norm_epsilon).sqrt()
+    x_normalized = x / scale
+    return x_normalized @ model.lm_head.weight.T + (model.lm_head.bias if hasattr(model.lm_head, 'bias') and model.lm_head.bias is not None else 0)
+
+
+def load_othello_vocab() -> dict[VocabType, dict[int, str]]:
     """
-    Takes a direction (eg. in the post-ReLU MLP activations) and returns the corresponding dir in the residual stream.
+    Returns vocab dicts (embedding and unembedding) for OthelloGPT, i.e. token_id -> token_str.
 
-    Args:
-        dir:
-            The direction in the activations, i.e. shape (feats, d_in) where d_in could be d_model, d_mlp, etc.
-        model:
-            The model, which should be a NNsightWrapper or similar.
+    This means ["pass"] + ["A0", "A1", ..., "H7"].
+
+    If probes=True, then this is actually the board squares (including middle ones)
     """
-    # If this SAE was trained on the residual stream or attn/mlp out, then we don't need to do anything
-    if "resid" in model.hook_point or "_out" in model.hook_point:
-        return dir
 
-    # If it was trained on the MLP layer, then we apply the W_out map
-    elif ("pre" in model.hook_point) or ("post" in model.hook_point):
-        return dir @ model.W_out
+    all_squares = [r + c for r in "ABCDEFGH" for c in "01234567"]
+    legal_squares = [sq for sq in all_squares if sq not in ["D3", "D4", "E3", "E4"]]
 
-    # Others not yet supported
-    else:
-        raise NotImplementedError(
-            "The hook your SAE was trained on isn't yet supported"
+    vocab_dict_probes = {
+        token_id: str_token for token_id, str_token in enumerate(all_squares)
+    }
+    vocab_dict = {
+        token_id: str_token
+        for token_id, str_token in enumerate(["pass"] + legal_squares)
+    }
+    return {
+        "embed": vocab_dict,
+        "unembed": vocab_dict,
+        "probes": vocab_dict_probes,
+    }
+
+
+# def load_othello_linear_probes(
+#     device: str = str(device),
+# ) -> dict[str, Float[Tensor, "d_model d_vocab_out"]]:
+#     """
+#     Loads linear probe from paper & rearranges it to the correct format.
+
+#     Interpretation:
+#         - Initial linear probe has shape (3, d_model, rows, cols, 3) where:
+#             - 0th dim = different move parity probes (black to play / odd, white / even, both)
+#             - Last dim = classification of empty / black / white squares
+#         - We create 3 new probes in a different basis (the "empty / theirs / mine" basis rather
+#           than "empty / black / white"), by averaging over the old probes.
+#             - Each new probe has shape (d_model, rows*cols=d_vocab_out).
+#     """
+#     OTHELLO_ROOT = Path(__file__).parent.parent / "othello_world"
+#     OTHELLO_MECHINT_ROOT = OTHELLO_ROOT / "mechanistic_interpretability"
+#     assert OTHELLO_MECHINT_ROOT.exists()
+#     linear_probe = t.load(OTHELLO_MECHINT_ROOT / "main_linear_probe.pth", map_location=device)
+
+#     black_to_play, white_to_play, _ = 0, 1, 2
+#     square_is_empty, square_is_white, square_is_black = 0, 1, 2
+
+#     linear_probe = einops.rearrange(
+#         linear_probe,
+#         "probes d_model rows cols classes -> probes classes d_model (rows cols)",
+#     )
+
+#     # Change of basis 1: from "blank/black/white" to "blank/mine/theirs"
+#     linear_probe = {
+#         "theirs": linear_probe[[black_to_play, white_to_play], [square_is_white, square_is_black]].mean(0),
+#         "mine": linear_probe[[black_to_play, white_to_play], [square_is_black, square_is_white]].mean(0),
+#         "empty": linear_probe[[black_to_play, white_to_play], [square_is_empty, square_is_empty]].mean(0),
+#     }
+
+#     # Change of basis 2: get a "mine vs theirs" direction & "blank" direction
+#     linear_probe = {
+#         "mine vs theirs": linear_probe["mine"] - linear_probe["theirs"],
+#         "empty": linear_probe["empty"] - 0.5 * (linear_probe["mine"] + linear_probe["theirs"]),
+#     }
+
+#     # Normalize
+#     linear_probe = {k: v / v.norm(dim=0).mean() for k, v in linear_probe.items()}
+
+#     # important thing: when these probes say "mine" they mean what just got moved, not who is to move!
+#     linear_probe = {
+#         "theirs vs mine": linear_probe["mine vs theirs"],
+#         "empty": linear_probe["empty"],
+#     }
+
+#     # the middle 4 squares being empty is meaningless
+#     linear_probe["empty"][:, [27, 28, 35, 36]] = 0.0
+
+#     return linear_probe
+
+
+def load_demo_model_saes_and_data(
+    seq_len: int, device: str
+) -> tuple[SAE, SAE, HookedSAETransformer, Tensor]:
+    """
+    This loads in the SAEs (and dataset) we'll be using for our demo examples.
+    """
+
+    SEQ_LEN = seq_len
+    DATASET_PATH = "NeelNanda/c4-code-20k"
+    MODEL_NAME = "gelu-1l"
+    HOOK_NAME = "blocks.0.mlp.hook_post"
+    saes: list[SAE] = []
+
+    model = HookedSAETransformer.from_pretrained(MODEL_NAME)
+
+    for version in [25, 47]:
+        state_dict = utils.download_file_from_hf(
+            "NeelNanda/sparse_autoencoder", f"{version}.pt", force_is_torch=True
         )
+        assert isinstance(state_dict, dict)
+        assert set(state_dict.keys()) == {"W_enc", "W_dec", "b_enc", "b_dec"}
+        d_in, d_sae = state_dict["W_enc"].shape
+
+        # Create autoencoder
+        cfg = SAEConfig(
+            architecture="standard",
+            # forward pass details.
+            d_in=d_in,
+            d_sae=d_sae,
+            activation_fn_str="relu",
+            apply_b_dec_to_input=True,
+            finetuning_scaling_factor=False,
+            # dataset it was trained on details.
+            context_size=SEQ_LEN,
+            model_name=MODEL_NAME,
+            hook_name=HOOK_NAME,
+            hook_layer=0,
+            hook_head_index=None,
+            prepend_bos=True,
+            dataset_path=DATASET_PATH,
+            dataset_trust_remote_code=False,
+            normalize_activations="None",
+            # misc
+            sae_lens_training_version=None,
+            dtype="float32",
+            device=str(device),
+        )
+        sae = SAE(cfg)
+        sae.load_state_dict(state_dict)
+        saes.append(sae)
+
+    sae, sae_B = saes
+
+    # Load in the data (it's a Dataset object)
+    data = load_dataset(DATASET_PATH, split="train")
+    assert isinstance(data, Dataset)
+
+    dataset = load_dataset(path=DATASET_PATH, split="train", streaming=False)
+
+    tokenized_data = utils.tokenize_and_concatenate(
+        dataset=dataset,  # type: ignore
+        tokenizer=model.tokenizer,  # type: ignore
+        streaming=True,
+        max_length=sae.cfg.context_size,
+        add_bos_token=sae.cfg.prepend_bos,
+    )
+    tokenized_data = tokenized_data.shuffle(42)
+    all_tokens = tokenized_data["tokens"]
+    assert isinstance(all_tokens, torch.Tensor)
+    print(all_tokens.shape)
+
+    return sae, sae_B, model, all_tokens
