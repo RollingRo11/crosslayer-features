@@ -12,6 +12,8 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 import einops
+import argparse
+import random
 
 # Add local sae_vis to path FIRST
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sae_vis'))
@@ -90,8 +92,44 @@ def load_latest_checkpoint():
     return crosscoder
 
 
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Generate crosscoder visualization dashboard")
+    
+    parser.add_argument(
+        "--num_features", 
+        type=int, 
+        default=5,
+        help="Number of features to visualize (default: 5)"
+    )
+    
+    parser.add_argument(
+        "--random", 
+        action="store_true",
+        help="Select features randomly instead of in numerical order"
+    )
+    
+    parser.add_argument(
+        "--batch_size", 
+        type=int, 
+        default=4,
+        help="Batch size for token processing (default: 4)"
+    )
+    
+    parser.add_argument(
+        "--output", 
+        type=str, 
+        default="crosscoder_dashboard_new.html",
+        help="Output filename for the dashboard (default: crosscoder_dashboard_new.html)"
+    )
+    
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
     print("Starting crosscoder visualization generation...")
+    print(f"Configuration: {args.num_features} features, {'random' if args.random else 'sequential'} selection, batch_size={args.batch_size}")
     
     # Load crosscoder
     crosscoder = load_latest_checkpoint()
@@ -156,15 +194,30 @@ def main():
     tokens = torch.cat(tokens, dim=0)
     print(f"Tokenized {len(tokens)} sequences of length {seq_len}")
     
-    # Create config - visualize fewer features for speed
+    # Generate feature list based on arguments
+    if args.random:
+        # Select random features from available range
+        available_features = list(range(crosscoder.ae_dim))
+        selected_features = random.sample(available_features, min(args.num_features, len(available_features)))
+        selected_features.sort()  # Sort for consistent display
+        print(f"Randomly selected features: {selected_features}")
+    else:
+        # Select features in numerical order
+        selected_features = list(range(min(args.num_features, crosscoder.ae_dim)))
+        print(f"Sequential features: {selected_features}")
+    
+    # Create config with user-specified parameters
     config = CrosscoderVisConfig(
-        features=list(range(5)),  # Visualize only 5 features
+        features=selected_features,
         minibatch_size_features=16,
-        minibatch_size_tokens=4,  # Smaller batch size for less text
+        minibatch_size_tokens=args.batch_size,
     )
     
-    # Modify the default layout to show fewer text examples
+    # Use the default layout which includes ActsHistogramConfig, and just modify the sequence config
     from sae_vis.data_config_classes import SeqMultiGroupConfig
+    
+    # The default layout already includes ActsHistogramConfig, LogitsTableConfig, and LogitsHistogramConfig
+    # We just need to modify the sequence configuration to show fewer examples
     config.feature_centric_layout.seq_cfg = SeqMultiGroupConfig(
         top_acts_group_size=5,  # Show only 5 top activation examples
         n_quantiles=1,  # Show only 1 quantile interval instead of 10
@@ -183,14 +236,13 @@ def main():
         )
         
         # Save visualization
-        output_file = "crosscoder_dashboard_new.html"
-        print(f"Saving to {output_file}...")
+        print(f"Saving to {args.output}...")
         vis_data.save_feature_centric_vis(
-            filename=output_file,
+            filename=args.output,
             verbose=True,
         )
         
-        print(f"Done! Open {output_file} in a browser.")
+        print(f"Done! Open {args.output} in a browser.")
         
     except Exception as e:
         print(f"Error during generation: {e}")
