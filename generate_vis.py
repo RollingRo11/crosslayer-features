@@ -99,8 +99,8 @@ def parse_args():
     parser.add_argument(
         "--num_features", 
         type=int, 
-        default=5,
-        help="Number of features to visualize (default: 5)"
+        default=3,
+        help="Number of features to visualize (default: 3)"
     )
     
     parser.add_argument(
@@ -112,8 +112,8 @@ def parse_args():
     parser.add_argument(
         "--batch_size", 
         type=int, 
-        default=4,
-        help="Batch size for token processing (default: 4)"
+        default=8,
+        help="Batch size for token processing (default: 8)"
     )
     
     parser.add_argument(
@@ -139,57 +139,68 @@ def main():
     print("Loading GPT-2 model...")
     model = LanguageModel("gpt2", device_map="cpu")
     
-    # Load some data
+    # Load some data - using Alpaca dataset for more diverse content
     print("Loading data...")
-    dataset = load_dataset("roneneldan/TinyStories", split="train", streaming=True)
+    dataset = load_dataset("tatsu-lab/alpaca", split="train", streaming=True)
     
-    # Tokenize sequences
+    # Tokenize sequences - use longer sequences for proper windowing
     tokens = []
-    max_sequences = 50  # Reduced sequences for less text
-    seq_len = 32  # Even shorter sequences
+    max_sequences = 50  # More sequences for better sampling
+    seq_len = 512  # Much longer sequences to allow windowing
     
-    # Collect diverse examples with aggressive deduplication
+    # Simplified collection - just take first N sequences that meet length requirement
     all_examples = []
-    seen_starts = set()  # Track text beginnings to avoid duplicates
-    seen_words = set()   # Track key word combinations
     
     for i, example in enumerate(dataset):
-        if len(all_examples) >= max_sequences * 10:  # Collect 10x for much better variety
+        if len(all_examples) >= max_sequences:
             break
-        text = example['text'].strip()
         
-        # Skip very short texts
-        if len(text) < 150:  # Increased minimum length
+        # Alpaca dataset has 'instruction', 'input', and 'output' fields
+        text_parts = []
+        if 'instruction' in example and example['instruction']:
+            text_parts.append(example['instruction'])
+        if 'input' in example and example['input']:
+            text_parts.append(example['input'])
+        if 'output' in example and example['output']:
+            text_parts.append(example['output'])
+        
+        # Combine into single text
+        text = ' '.join(text_parts).strip()
+        
+        # Remove newlines and extra whitespace
+        text = ' '.join(text.split())
+        
+        # Skip short texts - we want substantial content for windowing  
+        if len(text) < 800:  # Much longer minimum text length
             continue
             
-        # Check for duplicates using first 100 characters (more aggressive)
-        text_start = text[:100].lower()
-        if text_start in seen_starts:
-            continue
-            
-        # Also check for similar word patterns
-        words = text.split()[:10]  # First 10 words
-        word_signature = ' '.join(words).lower()
-        if word_signature in seen_words:
-            continue
-            
-        seen_starts.add(text_start)
-        seen_words.add(word_signature)
         all_examples.append(text)
     
-    # Randomly sample from collected examples
-    import random
-    sampled_texts = random.sample(all_examples, min(max_sequences, len(all_examples)))
+    sampled_texts = all_examples
     
-    # Create diverse token sequences by using different parts of longer texts
-    for i, text in enumerate(sampled_texts):
-        # For variety, start tokenization from different positions in longer texts
-        if len(text) > 200:
-            start_pos = (i * 37) % min(100, len(text) - 200)  # Vary starting position
-            text = text[start_pos:]
-        
+    # Tokenization with endoftext filtering
+    for text in sampled_texts:
         token_ids = model.tokenizer(text, return_tensors="pt", max_length=seq_len, truncation=True, padding="max_length")
-        tokens.append(token_ids['input_ids'])
+        
+        # Remove endoftext tokens (50256 for GPT-2)
+        input_ids = token_ids['input_ids'].squeeze(0)  # Remove batch dimension
+        endoftext_token_id = 50256
+        
+        # Filter out endoftext tokens and pad/truncate to desired length
+        filtered_ids = input_ids[input_ids != endoftext_token_id]
+        
+        # If we have too few tokens after filtering, pad with a neutral token (e.g., space token)
+        if len(filtered_ids) < seq_len:
+            # Use space token (220) for padding instead of endoftext
+            space_token_id = 220  # Space token in GPT-2
+            padding_needed = seq_len - len(filtered_ids)
+            padding = torch.full((padding_needed,), space_token_id, dtype=filtered_ids.dtype)
+            filtered_ids = torch.cat([filtered_ids, padding])
+        else:
+            # Truncate if too long
+            filtered_ids = filtered_ids[:seq_len]
+        
+        tokens.append(filtered_ids.unsqueeze(0))  # Add batch dimension back
     
     tokens = torch.cat(tokens, dim=0)
     print(f"Tokenized {len(tokens)} sequences of length {seq_len}")
@@ -219,10 +230,11 @@ def main():
     # The default layout already includes ActsHistogramConfig, LogitsTableConfig, and LogitsHistogramConfig
     # We just need to modify the sequence configuration to show fewer examples
     config.feature_centric_layout.seq_cfg = SeqMultiGroupConfig(
-        top_acts_group_size=5,  # Show only 5 top activation examples
-        n_quantiles=1,  # Show only 1 quantile interval instead of 10
-        quantile_group_size=3,  # Fewer examples per quantile
-        buffer=None,  # Force bold_idx="max" instead of using buffer position
+        top_acts_group_size=25,  # Show more top activation examples
+        n_quantiles=3,  # Show 3 quantile intervals  
+        quantile_group_size=8,  # Show 8 examples per quantile
+        buffer=(15, 15),  # Show 15 tokens before and after peak activation
+        compute_buffer=True,  # Enable proper buffer computation
     )
     
     # Get feature data
