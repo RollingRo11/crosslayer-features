@@ -12,6 +12,7 @@ dependencies = [
     "path>=17.1.0",
     "plotly>=6.2.0",
     "sae-vis",
+    "scipy>=1.16.0",
     "torch>=2.7.1",
     "tqdm>=4.67.1",
     "wandb>=0.20.1",

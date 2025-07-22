@@ -227,14 +227,15 @@ def main():
     # Use the default layout which includes ActsHistogramConfig, and just modify the sequence config
     from sae_vis.data_config_classes import SeqMultiGroupConfig
     
-    # The default layout already includes ActsHistogramConfig, LogitsTableConfig, and LogitsHistogramConfig
-    # We just need to modify the sequence configuration to show fewer examples
+    # Configure sequence display to match reference implementation approach
+    # Reduce verbose output and focus on high-quality examples
     config.feature_centric_layout.seq_cfg = SeqMultiGroupConfig(
-        top_acts_group_size=25,  # Show more top activation examples
-        n_quantiles=3,  # Show 3 quantile intervals  
-        quantile_group_size=8,  # Show 8 examples per quantile
-        buffer=(15, 15),  # Show 15 tokens before and after peak activation
+        top_acts_group_size=15,  # Fewer, higher quality top activation examples
+        n_quantiles=5,  # Show 5 quantile intervals for better distribution  
+        quantile_group_size=6,  # Fewer examples per quantile to reduce clutter
+        buffer=(8, 8),  # Smaller buffer for more focused context
         compute_buffer=True,  # Enable proper buffer computation
+        top_logits_hoverdata=5,  # Show top 5 logits in hover
     )
     
     # Get feature data
