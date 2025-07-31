@@ -21,10 +21,10 @@ model_config = config.to_dict() # type: ignore
 cc_config = {
     "seed": 51,
     "batch_size": 2048, # number of activations processed in each training step
-    "buffer_mult": 256, # multiplier for buffer size
-    "lr": 1e-4, # learning rate for AdamW
+    "buffer_mult": 512, # multiplier for buffer size
+    "lr": 4e-5, # learning rate for AdamW
     "num_tokens": int(4e8), # total number of tokens to process during the training run
-    "l1_coefficient": 2.5, # weight for l1 sparsity reg (reduced from 2.0)
+    "l1_coefficient": 2.0, # weight for l1 sparsity reg (reduced from 2.0)
     "beta1": 0.9,
     "beta2": 0.999,
     "context": 1024, # context length for the model
@@ -34,7 +34,7 @@ cc_config = {
     "save_interval": 100000,
     "model_name": "gpt2",
     "dtype": torch.float32,
-    "ae_dim": 4000, # autoencoder dimension (increased from 1000)
+    "ae_dim": 4096, # autoencoder dimension (increased from 1000)
     "drop_bos": True, # whether or not to drop the beginning of sentence token,
     "total_steps": 500000 # increased from 100000
 }
