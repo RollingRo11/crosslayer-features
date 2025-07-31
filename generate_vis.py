@@ -225,7 +225,7 @@ def main():
     )
     
     # Use the default layout which includes ActsHistogramConfig, and just modify the sequence config
-    from sae_vis.data_config_classes import SeqMultiGroupConfig
+    from sae_vis.data_config_classes import SeqMultiGroupConfig, CrossLayerTrajectoryConfig
     
     # Configure sequence display to match reference implementation approach
     # Reduce verbose output and focus on high-quality examples
@@ -236,6 +236,14 @@ def main():
         buffer=(8, 8),  # Smaller buffer for more focused context
         compute_buffer=True,  # Enable proper buffer computation
         top_logits_hoverdata=5,  # Show top 5 logits in hover
+    )
+    
+    # Add cross-layer trajectory visualization
+    config.feature_centric_layout.cross_layer_trajectory_cfg = CrossLayerTrajectoryConfig(
+        n_sequences=20,  # Show trajectories for 20 token sequences
+        height=400,
+        normalize=True,  # Normalize to [0, 1] like in the reference image
+        show_mean=True,
     )
     
     # Get feature data
