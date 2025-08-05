@@ -1,0 +1,403 @@
+/* ! General styles */
+
+/* Styling of the top-level container */
+.grid-container {
+    font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono', 'Source Code Pro', 'Cascadia Code', monospace;
+    border: none; /* Remove the square box border */
+    background-color: #fff;
+    margin: 10px;
+    box-shadow: none; /* Remove the shadow */
+    display: flex; /* Change from grid to flex for better control */
+    flex-direction: row;
+    justify-content: start;
+    overflow-x: visible; /* Remove horizontal scrolling */
+    overflow-y: visible;
+    white-space: normal; /* Allow text wrapping */
+    padding: 20px;
+    width: calc(100vw - 40px); /* Use almost full viewport width */
+    min-height: calc(100vh - 120px); /* Use most of viewport height */
+}
+/* Styling each grid column (note, the max-height controls height of grid-container) */
+.grid-column {
+    margin-left: 20px;
+    padding-right: 20px;
+    flex: 1; /* Allow columns to grow and share space */
+    min-width: 0; /* Allow columns to shrink below content width */
+    max-height: 90vh; /* Use more of viewport height */
+    overflow-y: auto; /* Enable vertical scrolling */
+    overflow-x: hidden; /* Prevent horizontal scrolling */
+}
+
+/* First column (tables and layer plot) should be wider */
+.grid-column:first-child {
+    flex: 2.0;
+}
+
+/* Last column (sequences) should be wider */
+.grid-column:last-child {
+    flex: 1.5;
+}
+
+/* Plot container constraints to prevent stretching */
+.plotly-hist, .crossLayerTrajectory {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    overflow: hidden !important;
+    position: relative !important;
+}
+
+/* Specific constraints for histogram plots */
+.plotly-hist > div {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 250px !important;
+}
+
+/* Specific constraints for cross-layer trajectory plots */
+.crossLayerTrajectory > div {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 300px !important;
+}
+/* Styling the scrollbars */
+::-webkit-scrollbar {
+    height: 10px;
+    width: 10px;
+}
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+::-webkit-scrollbar-thumb {
+    background: #999;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+/* Styling for plotly charts (acts density, logits histogram) */
+.plotly-hist {
+    margin-bottom: 25px;
+    margin-top: -5px; /* Negative margin to close gap with layer plot */
+    height: 280px; /* Much taller */
+    width: 100%; /* Use full column width */
+    max-width: 100%; /* Remove fixed max-width to allow responsive scaling */
+    min-width: 250px; /* Smaller minimum width for better responsiveness */
+}
+/* Layer activation plot styling */
+.layerActivationPlot {
+    margin-bottom: 10px; /* Reduced from 25px to close gap */
+    margin-top: 0px;
+    height: 350px;
+    width: 100%; /* Use full column width */
+    max-width: 100%; /* Remove fixed max-width to allow responsive scaling */
+}
+
+/* Styling for individual superposition analysis components */
+.featureTrajectory, .layerCorrelation, .featureInterference, .residualStream {
+    margin-bottom: 20px;
+    width: 100%;
+    max-width: 100%; /* Remove fixed max-width to allow responsive scaling */
+    box-sizing: border-box; /* Include padding in width calculation */
+}
+
+.featureTrajectory h4, .layerCorrelation h4, .featureInterference h4, .residualStream h4 {
+    margin-bottom: 15px;
+}
+
+/* Margins below the titles (most subtitles are h4, except for the prompt-centric view which has h2 titles) */
+h4 {
+    margin-top: 0px;
+    margin-bottom: 15px;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+/* Sequence group headers need special styling */
+.seq-group h4 {
+    margin-bottom: 20px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #d1d9e0;
+    font-size: 14px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+/* Sometimes I want to put highlights in my headers! */
+.highlight-header {
+    font-size: 0.85em;
+    margin-bottom: 5px;
+    /* font-size: 0.8em;
+    font-weight: bold; */
+
+    > span {
+        padding: 0px 4px;
+        border-radius: 3px;
+    }   
+}
+/* Some space below the <hr> line in prompt-centric vis */
+hr {
+    margin-bottom: 35px;
+}
+
+/* ! Styling of the dropdowns */
+
+select {
+    appearance: none;
+    border: 1px solid #ccc;
+    flex: 1;
+    padding: 6px 12px;
+    background-color: #fff;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+}
+.select {
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    cursor: pointer;
+    display: flex;
+    width: 100px;
+    height: 32px;
+    border-radius: 6px;
+    overflow: hidden;
+    position: relative;
+    margin-right: 12px;
+    border: 1px solid #d0d7de;
+}
+.select::after {
+    position: absolute;
+    content: '\25BC';
+    font-size: 10px;
+    top: 0;
+    right: 0;
+    padding: 10px 12px;
+    background-color: #f6f8fa;
+    transition: .2s all ease;
+    pointer-events: none;
+    color: #656d76;
+    border-left: 1px solid #d0d7de;
+}
+.select:hover::after {
+    background-color: #f3f4f6;
+    color: #24292f;
+}
+#dropdown-container {
+    margin-left: 10px;
+    margin-top: 20px;
+    display: flex;
+    flex-wrap: wrap;
+    font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono', 'Source Code Pro', 'Cascadia Code', monospace;
+}
+select {
+    font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono', 'Source Code Pro', 'Cascadia Code', monospace;
+}
+
+/* ! Sequences */
+
+.seq-group {
+    overflow-x: visible; /* Remove horizontal scrollbar */
+    overflow-y: visible;
+    padding-bottom: 15px;
+    padding-top: 15px;
+    margin-bottom: 25px; /* Increased gap between groups for better separation */
+    white-space: normal; /* Allow text to wrap */
+    background-color: #f8f8f8;
+    border-radius: 8px;
+    padding: 20px;
+    border: 1px solid #e1e4e8; /* Add border for better definition */
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); /* Subtle shadow */
+}
+.seq {
+    margin-bottom: 15px; /* Increased space between sequences within a group to prevent overlapping */
+}
+.token {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 1.4em; /* Increased from 0.8em to 1.4em for much larger text */
+    border-top-left-radius: 0px; /* Square corners instead of rounded */
+    border-top-right-radius: 0px; /* Square corners instead of rounded */
+    padding: 2px; /* Increased padding slightly for better spacing */
+    color: black;
+    display: inline;
+    white-space: pre-wrap; /* preserves whitespaces in seq tokens */
+    line-height: 1.6; /* Add line-height to prevent overlapping */
+}
+/* All the messy hovering stuff! */
+.hover-text {
+    position: relative;
+    cursor: pointer;
+    display: inline-block; /* Needed to contain the tooltip */
+    box-sizing: border-box;
+}
+.tooltip {
+    font-family: 'system-ui'; /* fields in hover text shouldn't be code font */
+    font-size: 1.1em;
+    background-color: #fff;
+    color: #333; /* ? why is this here? */
+    text-align: center;
+    border-radius: 10px;
+    padding: 5px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.25);
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    /* to stand out from rest of tooltip content, code should have grey background */
+    code { 
+        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono', 'Source Code Pro', 'Cascadia Code', monospace;
+        background-color: #ddd;
+        padding: 0px 3px;
+        border-radius: 3px;
+    }
+}
+.token:hover {
+    border-top: 3px solid black;
+}
+.tooltip-container {
+    position: absolute;
+    pointer-events: none;
+}
+.hover-text:hover + .tooltip-container .tooltip {
+    display: block;
+}
+
+/* ! Control buttons styling */
+
+#dropdown-container button {
+    font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono', 'Source Code Pro', 'Cascadia Code', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 6px 12px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background-color: #f6f8fa;
+    color: #24292f;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    margin: 2px;
+}
+
+#dropdown-container button:hover {
+    background-color: #f3f4f6;
+    border-color: #afb8c1;
+}
+
+#dropdown-container button:active {
+    background-color: #ebf0f4;
+    border-color: #afb8c1;
+    transform: translateY(1px);
+}
+
+#dropdown-container label {
+    font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono', 'Source Code Pro', 'Cascadia Code', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    color: #24292f;
+}
+
+/* Active button states */
+#dropdown-container button.active-sort {
+    background-color: #0969da;
+    border-color: #0969da;
+    color: #ffffff;
+}
+
+#dropdown-container button.active-sort:hover {
+    background-color: #0860ca;
+    border-color: #0860ca;
+}
+
+#dropdown-container button.active-filter {
+    background-color: #cf222e;
+    border-color: #cf222e;
+    color: #ffffff;
+}
+
+#dropdown-container button.active-filter:hover {
+    background-color: #bc1a26;
+    border-color: #bc1a26;
+}
+
+/* ! Tables */
+
+table {
+    border: unset;
+    color: black;
+    border-collapse: collapse;
+    width: -moz-fit-content;
+    width: -webkit-fit-content;
+    width: fit-content;
+    margin-left: auto;
+    margin-right: auto;
+    font-size: 0.8em;
+}
+table.table-left tr {
+    border-bottom: 1px solid #eee;
+    padding: 15px;
+}
+table.table-left td {
+    padding: 3px 4px;
+}
+table.table-left {
+    width: 100%;
+}
+table.table-left td.left-aligned {
+    max-width: 120px;
+    overflow-x: hidden;
+}
+td {
+    border: none;
+    padding: 2px 4px;
+    white-space: nowrap;
+}
+.right-aligned {
+    text-align: right;
+}
+.left-aligned {
+    text-align: left;
+}
+.center-aligned {
+    text-align: center;
+    padding-bottom: 8px;
+}
+table span {
+    background-color: #ddd;
+    padding: 0px 4px;
+    border-radius: 3px;
+    white-space: pre-wrap; /* preserves whitespaces in table tokens */
+}
+.table-container {
+    width: 100%;
+}
+.half-width-container {
+    display: flex;
+}
+.half-width {
+    width: 50%;
+    margin-right: -4px;
+}
+
+/* Feature tables should have space below them, also they should have a min column width */
+.featureTables table {
+    margin-bottom: 25px;
+    min-width: 250px;
+}
+/* Configure logits table container (i.e. the thing containing the smaller and larger tables) */
+.logitsTable {
+    min-width: 375px;
+    display: flex;
+    overflow-x: hidden;
+    margin-bottom: 20px;
+}
+/* Code is always bold in this table (this is just the neg/pos string tokens) */
+.logitsTable code {
+    font-weight: bold;
+}
+/* Set width of the tables inside the container (so they can stack horizontally), also put a gap between them */
+.logitsTable > div.positive {
+    width: 47%;
+}
+.logitsTable > div.negative {
+    width: 47%;
+    margin-right: 5%;
+}
