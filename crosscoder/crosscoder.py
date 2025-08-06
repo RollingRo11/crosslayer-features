@@ -27,8 +27,8 @@ model_config = config.to_dict() # type: ignore
 
 cc_config = {
     "seed": 51,
-    "batch_size": 512, # number of activations processed in each training step
-    "buffer_mult": 12, # multiplier for buffer size
+    "batch_size": 2048, # number of activations processed in each training step
+    "buffer_mult": 512, # multiplier for buffer size
     "lr": 4e-5, # learning rate for AdamW
     "num_tokens": int(4e8), # total number of tokens to process during the training run
     "l1_coefficient": 2.0, # weight for l1 sparsity reg (reduced from 2.0)
@@ -39,13 +39,13 @@ cc_config = {
     "model_batch_size": 16, # batch size when running the base model to generate activations
     "log_interval": 100,
     "save_interval": 250000,
-    "model_name": "pythia7b",
+    "model_name": "gpt2",
     "dtype": torch.float32,
     "ae_dim": 8192,
     "drop_bos": True, # whether or not to drop the beginning of sentence token,
     "total_steps": 250000, # increased from 100000
     "normalization": "layer_wise", # Options: "layer_wise", "global", "none"
-    "optimizer": "sophia" # Options: "adamw", "sophia"
+    "optimizer": "adamw" # Options: "adamw", "sophia"
 }
 
 # Use absolute path relative to this file's location
@@ -70,7 +70,7 @@ class Crosscoder(nn.Module):
         if self.cfg["model_name"] == "gpt2":
             self.model = nnsight.LanguageModel("gpt2", device_map="auto")
             self.context = 1024
-        elif self.cfg["model_name"] == "pythia7b":
+        elif self.cfg["model_name"] == "pythia":
             self.model = nnsight.LanguageModel("EleutherAI/pythia-2.8b-deduped", device_map="auto")
             self.context = 2048
 
@@ -222,7 +222,7 @@ class Buffer:
         if self.cfg["model_name"] == "gpt2":
             self.model = nnsight.LanguageModel("gpt2", device_map="auto")
             self.context = 1024
-        elif self.cfg["model_name"] == "pythia7b":
+        elif self.cfg["model_name"] == "pythia":
             self.model = nnsight.LanguageModel("EleutherAI/pythia-2.8b-deduped", device_map="auto")
             self.context = 2048
 
@@ -407,10 +407,7 @@ class Trainer:
             return 1.0 - (step - 0.8 * self.total_steps) / (0.2 * self.total_steps)
 
     def get_l1_coeff(self):
-        if self.step_counter < 0.05 * self.total_steps:
-            return self.cfg["l1_coefficient"] * self.step_counter / (0.05 * self.total_steps)
-        else:
-            return self.cfg["l1_coefficient"]
+       return self.cfg["l1_coefficient"]
 
     def step(self):
         acts = self.buffer.next()
