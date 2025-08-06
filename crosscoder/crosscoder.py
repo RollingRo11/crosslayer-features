@@ -61,7 +61,7 @@ class Crosscoder(nn.Module):
         if self.cfg["model_name"] == "gpt2":
             self.model = nnsight.LanguageModel("gpt2", device_map="auto")
             self.context = 1024
-        elif self.cfg["model_name"] == "pythia7b"
+        elif self.cfg["model_name"] == "pythia7b":
             self.model = nnsight.LanguageModel("EleutherAI/pythia-6.9b-deduped", device_map="auto")
             self.context = 2048
 
@@ -202,7 +202,7 @@ class Buffer:
         if self.cfg["model_name"] == "gpt2":
             self.model = nnsight.LanguageModel("gpt2", device_map="auto")
             self.context = 1024
-        elif self.cfg["model_name"] == "pythia7b"
+        elif self.cfg["model_name"] == "pythia7b":
             self.model = nnsight.LanguageModel("EleutherAI/pythia-6.9b-deduped", device_map="auto")
             self.context = 2048
 
@@ -300,7 +300,7 @@ class Buffer:
 
     def get_tokens_batch(self):
         """Get a batch of tokenized text data"""
-        dataset = load_dataset("EleutherAI/pile", split="train", streaming=True)
+        dataset = load_dataset("wikitext", "wikitext-2-v1", split="train", streaming=True)
 
         tokens = []
         count = 0
@@ -334,7 +334,7 @@ class Trainer:
     def __init__(self, cfg, use_wandb=True):
         self.cfg = cfg
         self.model = model
-        self.crosscoder = torch.compile(self.crosscoder)
+        self.crosscoder = Crosscoder(cfg)
         self.buffer = Buffer(cfg)
         self.total_steps = cfg["total_steps"]
         self.use_wandb = use_wandb
