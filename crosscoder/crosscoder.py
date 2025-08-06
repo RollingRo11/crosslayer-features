@@ -11,6 +11,7 @@ import tqdm
 import json
 from datasets import load_dataset
 from torch.nn.utils import clip_grad_norm_
+from sophia import SophiaG
 
 # test
 model = nnsight.LanguageModel("gpt2", device_map="auto")
@@ -34,9 +35,11 @@ cc_config = {
     "save_interval": 100000,
     "model_name": "gpt2",
     "dtype": torch.float32,
-    "ae_dim": 4096, # autoencoder dimension (increased from 1000)
+    "ae_dim": 8192,
     "drop_bos": True, # whether or not to drop the beginning of sentence token,
-    "total_steps": 500000 # increased from 100000
+    "total_steps": 500000, # increased from 100000
+    "normalization": "layer_wise", # Options: "layer_wise", "global", "none"
+    "optimizer": "sophia" # Options: "adamw", "sophia"
 }
 
 SAVE_DIR = Path("./saves")
@@ -57,11 +60,17 @@ class Crosscoder(nn.Module):
         self.cfg = cfg
         if self.cfg["model_name"] == "gpt2":
             self.model = nnsight.LanguageModel("gpt2", device_map="auto")
+            self.context = 1024
+        elif self.cfg["model_name"] == "pythia7b"
+            self.model = nnsight.LanguageModel("EleutherAI/pythia-6.9b-deduped", device_map="auto")
+            self.context = 2048
+
 
         self.modelcfg = self.model.config.to_dict() # type: ignore
         self.num_layers = self.modelcfg['n_layer']
         self.resid_dim = self.modelcfg['n_embd']
-        torch.manual_seed(42)
+        self.seed = self.cfg["seed"]
+        torch.manual_seed(self.seed)
         self.ae_dim = cfg["ae_dim"]
         self.dtype = cfg["dtype"]
         self.save_dir = None
@@ -81,14 +90,14 @@ class Crosscoder(nn.Module):
         nn.init.kaiming_uniform_(self.W_enc, a=1)
         nn.init.kaiming_uniform_(self.W_dec, a=1)
 
-        dec_init_norm = 0.005
+        dec_init_norm = 0.08
         self.W_dec.data = (
             self.W_dec.data / self.W_dec.data.norm(dim=-1, keepdim=True) * dec_init_norm
         )
 
-        self.W_enc.data = einops.rearrange(
-            self.W_dec.data.clone(),
-            "ae_dim n_layers d_model -> n_layers d_model ae_dim",
+        enc_init_norm = 0.08
+        self.W_enc.data = (
+            self.W_enc.data / self.W_enc.data.norm(dim=-1, keepdim=True) * enc_init_norm
         )
 
         self.b_enc = nn.Parameter(torch.zeros(self.ae_dim, dtype=self.dtype))
@@ -96,7 +105,6 @@ class Crosscoder(nn.Module):
             torch.zeros((self.num_layers, self.resid_dim), dtype=self.dtype)
         )
 
-        # Move to device
         self.to(cfg["device"])
 
     def encode(self, x, apply_act=True):
@@ -127,7 +135,6 @@ class Crosscoder(nn.Module):
         return self.decode(acts)
 
     def return_loss(self, x):
-        # x = batch n_layers d_model
         x = x.to(self.dtype).to(self.cfg["device"])
         acts = self.encode(x)
 
@@ -161,13 +168,11 @@ class Crosscoder(nn.Module):
             self.save_dir = SAVE_DIR / f"version_{version}"
             self.save_dir.mkdir(parents=True)
 
-        # Add the missing save_version attribute
         self.save_version = getattr(self, 'save_version', 0)
 
         weight_path = self.save_dir / f"{self.save_version}.pt"
         cfg_path = self.save_dir / f"{self.save_version}_cfg.json"
 
-        # Actually save the weights and config
         torch.save({
             'W_enc': self.W_enc.data,
             'W_dec': self.W_dec.data,
@@ -176,7 +181,6 @@ class Crosscoder(nn.Module):
             'cfg': self.cfg
         }, weight_path)
 
-        # Make config JSON serializable
         cfg_to_save = self.cfg.copy()
         cfg_to_save['dtype'] = str(cfg_to_save['dtype'])
 
@@ -197,10 +201,15 @@ class Buffer:
         self.cfg = cfg
         if self.cfg["model_name"] == "gpt2":
             self.model = nnsight.LanguageModel("gpt2", device_map="auto")
+            self.context = 1024
+        elif self.cfg["model_name"] == "pythia7b"
+            self.model = nnsight.LanguageModel("EleutherAI/pythia-6.9b-deduped", device_map="auto")
+            self.context = 2048
+
         self.modelcfg = self.model.config.to_dict() # type: ignore
         self.buffer_size = self.cfg["batch_size"] * cfg["buffer_mult"]
-        self.buffer_batches = self.buffer_size // (cfg["context"] - 1)
-        self.buffer_size = self.buffer_batches * (cfg["context"] - 1)
+        self.buffer_batches = self.buffer_size // (self.context - 1)
+        self.buffer_size = self.buffer_batches * (self.context - 1)
 
         self.buffer = torch.zeros(
             (self.buffer_size, self.modelcfg["n_layer"], self.modelcfg["n_embd"]),
@@ -210,7 +219,6 @@ class Buffer:
         self.pointer = 0
         self.first = True
 
-        # Dynamic normalization will be computed per batch
         self.layer_means = None
         self.layer_stds = None
         self.normalization_computed = False
@@ -219,7 +227,6 @@ class Buffer:
 
     @torch.no_grad()
     def refresh(self):
-        print("Refreshing buffer...")
 
         tokens = self.get_tokens_batch()
 
@@ -245,16 +252,13 @@ class Buffer:
 
             all_acts.append(batch_acts)
 
-        # Concatenate all activations
         self.buffer = torch.cat(all_acts, dim=0)
 
-        # Shuffle for better training
         perm = torch.randperm(len(self.buffer))
         self.buffer = self.buffer[perm]
 
         self.pointer = 0
 
-        # Reset normalization flag to recompute with new data
         self.normalization_computed = False
 
     @torch.no_grad()
@@ -266,29 +270,37 @@ class Buffer:
         batch = self.buffer[self.pointer:self.pointer + self.cfg["batch_size"]]
         self.pointer += self.cfg["batch_size"]
 
-        # Apply dynamic normalization
         batch = batch.float()
 
-        # Compute normalization statistics if not already done or periodically recompute
-        if not self.normalization_computed or self.pointer % (self.cfg["batch_size"] * 100) == 0:
-            # Use a larger sample for more stable statistics
-            sample_size = min(self.cfg["batch_size"] * 10, len(self.buffer))
-            sample_indices = torch.randperm(len(self.buffer))[:sample_size]
-            sample_batch = self.buffer[sample_indices]
+        normalization_method = self.cfg.get("normalization", "layer_wise")  # Options: "layer_wise", "global", "none"
 
-            self.layer_means = sample_batch.mean(dim=0, keepdim=True)  # Shape: (1, n_layers, d_model)
-            self.layer_stds = sample_batch.std(dim=0, keepdim=True)    # Shape: (1, n_layers, d_model)
-            self.normalization_computed = True
-            print(f"Computed normalization stats - means: {self.layer_means.mean():.4f}, stds: {self.layer_stds.mean():.4f}")
+        if normalization_method != "none":
+            if not self.normalization_computed or self.pointer % (self.cfg["batch_size"] * 100) == 0:
+                sample_size = min(self.cfg["batch_size"] * 10, len(self.buffer))
+                sample_indices = torch.randperm(len(self.buffer))[:sample_size]
+                sample_batch = self.buffer[sample_indices]
 
-        # Apply normalization
-        batch = (batch - self.layer_means) / (self.layer_stds + 1e-8)
+                if normalization_method == "layer_wise":
+                    self.layer_means = sample_batch.mean(dim=0, keepdim=True)  # Shape: (1, n_layers, d_model)
+                    self.layer_stds = sample_batch.std(dim=0, keepdim=True)    # Shape: (1, n_layers, d_model)
+                elif normalization_method == "global":
+                    global_mean = sample_batch.mean()
+                    global_std = sample_batch.std()
+                    self.layer_means = global_mean
+                    self.layer_stds = global_std
+
+                self.normalization_computed = True
+
+            if normalization_method == "layer_wise":
+                batch = (batch - self.layer_means) / (self.layer_stds + 1e-8)
+            elif normalization_method == "global":
+                batch = (batch - self.layer_means) / (self.layer_stds + 1e-8)
 
         return batch.to(self.cfg["device"])
 
     def get_tokens_batch(self):
         """Get a batch of tokenized text data"""
-        dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train", streaming=True)
+        dataset = load_dataset("EleutherAI/pile", split="train", streaming=True)
 
         tokens = []
         count = 0
@@ -306,7 +318,7 @@ class Buffer:
             token_ids = self.model.tokenizer.encode(
                 text,
                 return_tensors="pt",
-                max_length=self.cfg["context"],
+                max_length=self.context,
                 truncation=True,
                 padding="max_length"
             )
@@ -322,16 +334,21 @@ class Trainer:
     def __init__(self, cfg, use_wandb=True):
         self.cfg = cfg
         self.model = model
-        self.crosscoder = Crosscoder(cfg)
+        self.crosscoder = torch.compile(self.crosscoder)
         self.buffer = Buffer(cfg)
         self.total_steps = cfg["total_steps"]
         self.use_wandb = use_wandb
 
+        self.crosscoder = torch.compile(self.crosscoder, mode="default")
 
-        self.optimizer = torch.optim.AdamW(
-        self.crosscoder.parameters(), lr=cfg["lr"],
-        betas=(cfg["beta1"], cfg["beta2"]),
-        )
+        # Choose optimizer based on config
+        if cfg.get("optimizer", "adamw") == "sophia":
+            self.optimizer = SophiaG(self.crosscoder.parameters(), lr=2e-4, betas=(0.965, 0.99), rho=0.01, weight_decay=1e-1)
+        else:
+            self.optimizer = torch.optim.AdamW(
+                self.crosscoder.parameters(), lr=cfg["lr"],
+                betas=(cfg["beta1"], cfg["beta2"]),
+            )
 
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer, self.lr_lambda
@@ -359,10 +376,8 @@ class Trainer:
 
     def step(self):
         acts = self.buffer.next()
-        # Ensure acts are on the right device and dtype
         acts = acts.float().to(self.cfg["device"])
 
-        # Get encoded activations for sparsity calculation
         with torch.no_grad():
             encoded_acts = self.crosscoder.encode(acts)
 
@@ -370,13 +385,11 @@ class Trainer:
         loss = losses.l2_loss + self.get_l1_coeff() * losses.l1_loss
         loss.backward()
 
-        # Improved gradient clipping with monitoring
         grad_norm = clip_grad_norm_(self.crosscoder.parameters(), max_norm=5.0)
         self.optimizer.step()
         self.scheduler.step()
         self.optimizer.zero_grad()
 
-        # Enhanced loss monitoring
         loss_dict = {
             "loss": loss.item(),
             "l2_loss": losses.l2_loss.item(),
@@ -411,15 +424,9 @@ class Trainer:
                     print(f"Saving checkpoint at step {i+1}")
                     self.save()
 
-                # Periodic feature analysis
                 if i % (self.cfg["log_interval"] * 10) == 0 and i > 0:
-                    print(f"Analyzing feature quality at step {i}")
                     try:
                         analysis = self.analyze_feature_quality()
-                        print(f"  Mean sparsity: {analysis['mean_sparsity']:.3f}")
-                        print(f"  Dead features: {analysis['dead_features']}/{analysis['total_features']}")
-                        print(f"  Worst layer reconstruction error: {max(analysis['layer_reconstruction_errors']):.4f}")
-
                         if self.use_wandb:
                             wandb.log({
                                 'feature_analysis/mean_sparsity': analysis['mean_sparsity'],
@@ -435,23 +442,18 @@ class Trainer:
 
     def analyze_feature_quality(self, n_samples=1000):
         """Analyze the quality of learned features during training"""
-        # Get a sample of activations
         sample_acts = self.buffer.next()[:n_samples]
 
         with torch.no_grad():
-            # Encode the activations
             encoded = self.crosscoder.encode(sample_acts)
 
-            # Compute feature statistics
             feature_means = encoded.mean(dim=0)
             feature_stds = encoded.std(dim=0)
             feature_sparsity = (encoded > 0).float().mean(dim=0)
 
-            # Find most and least active features
             most_active = torch.argsort(feature_sparsity, descending=True)[:10]
             least_active = torch.argsort(feature_sparsity, descending=False)[:10]
 
-            # Compute reconstruction quality
             reconstructed = self.crosscoder.decode(encoded)
             recon_error = F.mse_loss(reconstructed, sample_acts, reduction='none')
             layer_recon_error = recon_error.mean(dim=[0, 2])  # Average over batch and d_model
