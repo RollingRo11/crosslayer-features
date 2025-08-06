@@ -842,7 +842,14 @@ def get_feature_data(
     for feat_idx in feature_indices:
         all_crosscoder_acts[feat_idx] = torch.zeros((batch_size, seq_len), dtype=torch.float32)
 
-    for i in range(0, n_batches, cfg.minibatch_size_tokens):
+    # Create progress bar for minibatch processing
+    minibatch_progress = tqdm(
+        range(0, n_batches, cfg.minibatch_size_tokens),
+        desc="Processing minibatches",
+        unit="batch"
+    )
+
+    for i in minibatch_progress:
         batch_tokens = tokens[i:i + cfg.minibatch_size_tokens]
         batch_end = min(i + cfg.minibatch_size_tokens, n_batches)
 
@@ -868,6 +875,12 @@ def get_feature_data(
         for feat_idx in feature_indices:
             all_crosscoder_acts[feat_idx][i:batch_end] = cc_acts[:, :, feat_idx].cpu()
 
+        # Update progress description with current batch info
+        minibatch_progress.set_postfix({
+            'batch': f"{batch_end}/{n_batches}",
+            'features': len(feature_indices)
+        })
+
     cache["crosscoder_acts"] = all_crosscoder_acts
 
     # Get feature directions from decoder
@@ -885,6 +898,10 @@ def get_feature_data(
         W_U = get_unembedding_matrix(model)
     feature_out_dir = feature_resid_dir @ W_U
 
+    # Create progress bar for feature parsing
+    print("Processing feature visualizations...")
+    feature_progress = tqdm(feature_indices, desc="Generating feature data", unit="feature")
+
     # Parse the feature data
     crosscoder_vis_data, time_logs = parse_feature_data(
         model=model,
@@ -897,6 +914,7 @@ def get_feature_data(
         feature_resid_dir_input=feature_resid_dir_input,
         cache=cache,
         feature_out_dir=feature_out_dir,
+        progress=[feature_progress],
     )
 
     if cfg.verbose:

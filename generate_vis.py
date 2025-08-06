@@ -266,6 +266,7 @@ def main():
         features=selected_features,
         minibatch_size_features=16,
         minibatch_size_tokens=args.batch_size,
+        verbose=True,  # Enable progress reporting
     )
 
     # Use the default layout which includes ActsHistogramConfig, and just modify the sequence config
@@ -291,7 +292,8 @@ def main():
     )
 
     # Get feature data
-    print("Generating feature data...")
+    print(f"🔄 Step 1/2: Generating feature data...")
+    print(f"   └── Processing {len(tokens)} sequences with {len(selected_features)} features using {args.batch_size} batch size")
     try:
         vis_data = get_feature_data(
             model=model,
@@ -301,13 +303,13 @@ def main():
         )
 
         # Save visualization
-        print(f"Saving to {args.output}...")
+        print(f"🔄 Step 2/2: Saving visualization to {args.output}...")
         vis_data.save_feature_centric_vis(
             filename=args.output,
             verbose=True,
         )
 
-        print(f"Done! Open {args.output} in a browser.")
+        print(f"✅ Done! Open {args.output} in a browser.")
 
     except Exception as e:
         print(f"Error during generation: {e}")
