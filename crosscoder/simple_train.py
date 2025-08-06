@@ -1,6 +1,6 @@
 import torch
 from pathlib import Path
-from crosscoder import Trainer, cc_config, SAVE_DIR
+from crosscoder import Trainer, cc_config, SAVE_DIR, WANDB_DIR
 
 def main():
     config = cc_config.copy()
@@ -13,9 +13,12 @@ def main():
     print(f"L1 coefficient: {config['l1_coefficient']}")
     print(f"Total tokens: {config['num_tokens']:,}")
     print(f"Save directory: {SAVE_DIR}")
+    print(f"Wandb directory: {WANDB_DIR}")
     print()
 
+    # Ensure directories exist
     SAVE_DIR.mkdir(exist_ok=True)
+    WANDB_DIR.mkdir(exist_ok=True)
 
     try:
         print("Initializing trainer...")

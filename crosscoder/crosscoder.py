@@ -12,6 +12,12 @@ import json
 from datasets import load_dataset
 from torch.nn.utils import clip_grad_norm_
 from sophia import SophiaG
+import sys
+from pathlib import Path
+
+# Add sae_vis to path for model utilities
+sys.path.append(str(Path(__file__).parent.parent / "sae_vis" / "sae_vis"))
+from model_utils import get_layer_output
 
 # test
 model = nnsight.LanguageModel("gpt2", device_map="auto")
@@ -21,28 +27,31 @@ model_config = config.to_dict() # type: ignore
 
 cc_config = {
     "seed": 51,
-    "batch_size": 2048, # number of activations processed in each training step
-    "buffer_mult": 512, # multiplier for buffer size
+    "batch_size": 512, # number of activations processed in each training step
+    "buffer_mult": 12, # multiplier for buffer size
     "lr": 4e-5, # learning rate for AdamW
     "num_tokens": int(4e8), # total number of tokens to process during the training run
     "l1_coefficient": 2.0, # weight for l1 sparsity reg (reduced from 2.0)
     "beta1": 0.9,
     "beta2": 0.999,
-    "context": 1024, # context length for the model
+    "context": 2048, # context length for the model
     "device": "cuda",
-    "model_batch_size": 32, # batch size when running the base model to generate activations
+    "model_batch_size": 16, # batch size when running the base model to generate activations
     "log_interval": 100,
-    "save_interval": 100000,
-    "model_name": "gpt2",
+    "save_interval": 250000,
+    "model_name": "pythia7b",
     "dtype": torch.float32,
     "ae_dim": 8192,
     "drop_bos": True, # whether or not to drop the beginning of sentence token,
-    "total_steps": 500000, # increased from 100000
+    "total_steps": 250000, # increased from 100000
     "normalization": "layer_wise", # Options: "layer_wise", "global", "none"
     "optimizer": "sophia" # Options: "adamw", "sophia"
 }
 
-SAVE_DIR = Path("./saves")
+# Use absolute path relative to this file's location
+CROSSCODER_DIR = Path(__file__).parent
+SAVE_DIR = CROSSCODER_DIR / "saves"
+WANDB_DIR = CROSSCODER_DIR / "wandb"
 
 
 # enc of n_layers, d_model, d_sae
@@ -62,13 +71,22 @@ class Crosscoder(nn.Module):
             self.model = nnsight.LanguageModel("gpt2", device_map="auto")
             self.context = 1024
         elif self.cfg["model_name"] == "pythia7b":
-            self.model = nnsight.LanguageModel("EleutherAI/pythia-6.9b-deduped", device_map="auto")
+            self.model = nnsight.LanguageModel("EleutherAI/pythia-2.8b-deduped", device_map="auto")
             self.context = 2048
 
 
         self.modelcfg = self.model.config.to_dict() # type: ignore
-        self.num_layers = self.modelcfg['n_layer']
-        self.resid_dim = self.modelcfg['n_embd']
+
+        # Handle different model architectures
+        if 'n_layer' in self.modelcfg:
+            # GPT-2 style
+            self.num_layers = self.modelcfg['n_layer']
+            self.resid_dim = self.modelcfg['n_embd']
+        elif 'num_hidden_layers' in self.modelcfg:
+            self.num_layers = self.modelcfg['num_hidden_layers']
+            self.resid_dim = self.modelcfg['hidden_size']
+        else:
+            raise ValueError(f"Unsupported model architecture. Config keys: {list(self.modelcfg.keys())}")
         self.seed = self.cfg["seed"]
         torch.manual_seed(self.seed)
         self.ae_dim = cfg["ae_dim"]
@@ -156,6 +174,8 @@ class Crosscoder(nn.Module):
 
     def save(self):
         if self.save_dir is None:
+            # Ensure save directory exists
+            SAVE_DIR.mkdir(parents=True, exist_ok=True)
             version_list = [
                 int(file.name.split("_")[1])
                 for file in list(SAVE_DIR.iterdir())
@@ -166,7 +186,7 @@ class Crosscoder(nn.Module):
             else:
                 version = 0
             self.save_dir = SAVE_DIR / f"version_{version}"
-            self.save_dir.mkdir(parents=True)
+            self.save_dir.mkdir(parents=True, exist_ok=True)
 
         self.save_version = getattr(self, 'save_version', 0)
 
@@ -203,16 +223,27 @@ class Buffer:
             self.model = nnsight.LanguageModel("gpt2", device_map="auto")
             self.context = 1024
         elif self.cfg["model_name"] == "pythia7b":
-            self.model = nnsight.LanguageModel("EleutherAI/pythia-6.9b-deduped", device_map="auto")
+            self.model = nnsight.LanguageModel("EleutherAI/pythia-2.8b-deduped", device_map="auto")
             self.context = 2048
 
         self.modelcfg = self.model.config.to_dict() # type: ignore
+
+        # Handle different model architectures
+        if 'n_layer' in self.modelcfg:
+            self.num_layers = self.modelcfg['n_layer']
+            self.resid_dim = self.modelcfg['n_embd']
+        elif 'num_hidden_layers' in self.modelcfg:
+            self.num_layers = self.modelcfg['num_hidden_layers']
+            self.resid_dim = self.modelcfg['hidden_size']
+        else:
+            raise ValueError(f"Unsupported model architecture. Config keys: {list(self.modelcfg.keys())}")
+
         self.buffer_size = self.cfg["batch_size"] * cfg["buffer_mult"]
         self.buffer_batches = self.buffer_size // (self.context - 1)
         self.buffer_size = self.buffer_batches * (self.context - 1)
 
         self.buffer = torch.zeros(
-            (self.buffer_size, self.modelcfg["n_layer"], self.modelcfg["n_embd"]),
+            (self.buffer_size, self.num_layers, self.resid_dim),
             dtype = torch.float32,
             requires_grad=False,
         ).to(cfg["device"])
@@ -238,9 +269,9 @@ class Buffer:
             with self.model.trace(batch_tokens) as tracer:
 
                 layer_outputs = []
-                for layer_idx in range(self.modelcfg["n_layer"]):
+                for layer_idx in range(self.num_layers):
 
-                    layer_out = self.model.transformer.h[layer_idx].output[0].save()
+                    layer_out = get_layer_output(self.model, layer_idx, tracer)
                     layer_outputs.append(layer_out)
 
             batch_acts = torch.stack(layer_outputs, dim=2)
@@ -248,7 +279,7 @@ class Buffer:
             if self.cfg.get("drop_bos", True):
                 batch_acts = batch_acts[:, 1:, :, :]
 
-            batch_acts = batch_acts.reshape(-1, self.modelcfg["n_layer"], self.modelcfg["n_embd"])
+            batch_acts = batch_acts.reshape(-1, self.num_layers, self.resid_dim)
 
             all_acts.append(batch_acts)
 
@@ -358,7 +389,14 @@ class Trainer:
 
 
         if use_wandb:
-            wandb.init(project="crosscroders", entity="rohan-kathuria-neu", config=cfg)
+            # Ensure wandb directory exists
+            WANDB_DIR.mkdir(exist_ok=True)
+            wandb.init(
+                project="crosscroders",
+                entity="rohan-kathuria-neu",
+                config=cfg,
+                dir=str(WANDB_DIR)
+            )
 
     def lr_lambda(self, step):
         if step < 0.05 * self.total_steps:

@@ -13,6 +13,8 @@ import einops
 from typing import Dict, List, Tuple, Optional
 from jaxtyping import Float, Int
 from torch import Tensor
+
+from .model_utils import get_unembedding_matrix
 import json
 from pathlib import Path
 
@@ -30,16 +32,16 @@ def compute_decoder_norms(crosscoder, feature_indices: List[int]) -> CrossLayerD
     Compute L2 norms of decoder vectors across layers for specified features.
     """
     norms_data = {}
-    
+
     for feature_idx in feature_indices:
         # Get decoder weights for this feature across all layers
         decoder_weights = crosscoder.W_dec[feature_idx]  # Shape: (n_layers, d_model)
-        
+
         # Compute L2 norm for each layer
         decoder_norms = torch.norm(decoder_weights, dim=1).cpu().numpy().tolist()
-        
+
         norms_data[feature_idx] = decoder_norms
-    
+
     return CrossLayerDecoderNormsData(
         feature_indices=feature_indices,
         decoder_norms=norms_data,
@@ -60,12 +62,12 @@ def compute_activation_heatmap(
     """
     n_layers = crosscoder.num_layers
     seq_len = min(len(token_strings), 50)  # Limit sequence length
-    
+
     # Create a synthetic heatmap based on decoder norms
     # This avoids expensive recomputation
     decoder_weights = crosscoder.W_dec[feature_idx]  # (n_layers, d_model)
     layer_norms = torch.norm(decoder_weights, dim=1).cpu().numpy()
-    
+
     # Create activation matrix with some variation
     layer_acts = []
     for layer_idx in range(n_layers):
@@ -74,7 +76,7 @@ def compute_activation_heatmap(
         position_variation = np.sin(np.linspace(0, 2*np.pi, seq_len)) * 0.3 + 0.7
         layer_acts_seq = (layer_strength * position_variation).tolist()
         layer_acts.append(layer_acts_seq)
-    
+
     return CrossLayerActivationHeatmapData(
         feature_idx=feature_idx,
         token_strings=token_strings[:seq_len],
@@ -96,24 +98,24 @@ def compute_aggregated_activation(
     This is a simplified version that uses pre-computed activations.
     """
     n_layers = crosscoder.num_layers
-    
+
     # For now, create a simple aggregated profile based on decoder norms
     # This avoids the expensive recomputation
     final_aggregated = {}
-    
+
     for feat_idx in feature_indices:
         # Use decoder norms as a proxy for layer importance
         decoder_weights = crosscoder.W_dec[feat_idx]  # (n_layers, d_model)
         layer_norms = torch.norm(decoder_weights, dim=1).cpu().numpy()
-        
+
         # Normalize to create a profile
         if layer_norms.sum() > 0:
             layer_profile = (layer_norms / layer_norms.sum()).tolist()
         else:
             layer_profile = [1.0 / n_layers] * n_layers
-            
+
         final_aggregated[feat_idx] = layer_profile
-    
+
     return CrossLayerAggregatedActivationData(
         feature_indices=feature_indices,
         mean_activations=final_aggregated,
@@ -134,34 +136,34 @@ def compute_direct_logit_attribution(
     # Get vocabulary
     vocab = model.tokenizer.get_vocab()
     id_to_token = {v: k for k, v in vocab.items()}
-    
+
     # Get unembedding matrix
-    W_U = model.transformer.wte.weight.T  # (d_model, vocab_size)
-    
+    W_U = get_unembedding_matrix(model)  # (d_model, vocab_size)
+
     dla_by_layer = {}
-    
+
     for layer_idx in range(crosscoder.num_layers):
         # Get decoder vector for this feature at this layer
         decoder_vec = crosscoder.W_dec[feature_idx, layer_idx]  # (d_model,)
-        
+
         # Compute logit attribution
         logit_effects = decoder_vec @ W_U  # (vocab_size,)
-        
+
         # Get top and bottom k tokens
         top_values, top_indices = torch.topk(logit_effects, k=top_k)
         bottom_values, bottom_indices = torch.topk(logit_effects, k=top_k, largest=False)
-        
+
         # Convert to lists
         top_tokens = [id_to_token.get(idx.item(), f"[{idx.item()}]") for idx in top_indices]
         bottom_tokens = [id_to_token.get(idx.item(), f"[{idx.item()}]") for idx in bottom_indices]
-        
+
         dla_by_layer[layer_idx] = {
             "top_tokens": top_tokens,
             "top_values": top_values.cpu().numpy().tolist(),
             "bottom_tokens": bottom_tokens,
             "bottom_values": bottom_values.cpu().numpy().tolist(),
         }
-    
+
     return CrossLayerDLAData(
         feature_idx=feature_idx,
         dla_by_layer=dla_by_layer,
@@ -183,23 +185,23 @@ def compute_feature_correlation(
     Simplified version using decoder weight correlations.
     """
     n_features = min(n_features, crosscoder.ae_dim)
-    
+
     # Use decoder weights to compute correlations
     # This avoids expensive activation computation
     with torch.no_grad():
         # Get decoder weights for first n features
         decoder_weights = crosscoder.W_dec[:n_features]  # (n_features, n_layers, d_model)
-        
+
         # Flatten to (n_features, n_layers * d_model)
         decoder_flat = decoder_weights.reshape(n_features, -1)
-        
+
         # Compute correlation matrix
         # Normalize each feature vector
         decoder_norm = decoder_flat / (torch.norm(decoder_flat, dim=1, keepdim=True) + 1e-8)
-        
+
         # Compute correlations
         correlation_matrix = (decoder_norm @ decoder_norm.T).cpu().numpy()
-    
+
     return CrossLayerFeatureCorrelationData(
         correlation_matrix=correlation_matrix.tolist(),
         feature_indices=list(range(n_features)),
@@ -225,7 +227,7 @@ def create_activation_heatmap_plot(data: CrossLayerActivationHeatmapData) -> str
         textfont={"size": 8},
         hovertemplate="Token: %{x}<br>Layer: %{y}<br>Activation: %{z:.3f}<extra></extra>"
     ))
-    
+
     fig.update_layout(
         title=f"Activation Heatmap for Feature {data.feature_idx}",
         xaxis_title="Token Position",
@@ -234,16 +236,16 @@ def create_activation_heatmap_plot(data: CrossLayerActivationHeatmapData) -> str
         width=1200,
         height=600,
     )
-    
+
     fig.update_xaxes(tickangle=-45)
-    
+
     return fig.to_html(include_plotlyjs='cdn')
 
 
 def create_aggregated_activation_plot(data: CrossLayerAggregatedActivationData) -> str:
     """Create Plotly figure for aggregated activations and return as HTML string."""
     fig = go.Figure()
-    
+
     for feature_idx in data.feature_indices:
         fig.add_trace(go.Scatter(
             x=list(range(data.n_layers)),
@@ -253,7 +255,7 @@ def create_aggregated_activation_plot(data: CrossLayerAggregatedActivationData) 
             line=dict(width=2),
             marker=dict(size=6)
         ))
-    
+
     fig.update_layout(
         title=f"Aggregated Activation Profile Across Dataset (n={data.n_samples_processed})",
         xaxis_title="Layer Index",
@@ -263,7 +265,7 @@ def create_aggregated_activation_plot(data: CrossLayerAggregatedActivationData) 
         height=500,
         hovermode='x unified'
     )
-    
+
     return fig.to_html(include_plotlyjs='cdn')
 
 
@@ -272,28 +274,28 @@ def create_dla_plot(data: CrossLayerDLAData) -> str:
     n_layers = data.n_layers
     rows = (n_layers + 3) // 4
     cols = min(4, n_layers)
-    
+
     fig = make_subplots(
         rows=rows, cols=cols,
         subplot_titles=[f"Layer {i}" for i in range(n_layers)],
         vertical_spacing=0.15,
         horizontal_spacing=0.1
     )
-    
+
     for layer_idx in range(n_layers):
         layer_data = data.dla_by_layer[layer_idx]
-        
+
         # Combine top and bottom tokens
         tokens = layer_data["top_tokens"] + layer_data["bottom_tokens"]
         values = layer_data["top_values"] + layer_data["bottom_values"]
-        
+
         # Determine subplot position
         row = layer_idx // cols + 1
         col = layer_idx % cols + 1
-        
+
         # Create bar chart
         colors = ['green' if v > 0 else 'red' for v in values]
-        
+
         fig.add_trace(
             go.Bar(
                 x=values,
@@ -305,17 +307,17 @@ def create_dla_plot(data: CrossLayerDLAData) -> str:
             ),
             row=row, col=col
         )
-        
+
         fig.update_xaxes(title_text="Logit Effect", row=row, col=col)
         fig.update_yaxes(tickfont=dict(size=8), row=row, col=col)
-    
+
     fig.update_layout(
         title=f"Direct Logit Attribution for Feature {data.feature_idx} Across Layers",
         template="plotly_white",
         width=1400,
         height=200 * rows,
     )
-    
+
     return fig.to_html(include_plotlyjs='cdn')
 
 
@@ -332,7 +334,7 @@ def create_correlation_heatmap_plot(data: CrossLayerFeatureCorrelationData) -> s
         textfont={"size": 8},
         hovertemplate="Feature %{x} - Feature %{y}<br>Correlation: %{z:.3f}<extra></extra>"
     ))
-    
+
     fig.update_layout(
         title=f"Feature Correlation Heatmap (Top {data.n_features} Features, n={data.n_samples_processed} samples)",
         xaxis_title="Feature Index",
@@ -341,5 +343,5 @@ def create_correlation_heatmap_plot(data: CrossLayerFeatureCorrelationData) -> s
         width=800,
         height=800,
     )
-    
+
     return fig.to_html(include_plotlyjs='cdn')

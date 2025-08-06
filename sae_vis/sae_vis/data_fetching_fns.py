@@ -22,6 +22,8 @@ from nnsight import LanguageModel
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from crosscoder.crosscoder import Crosscoder
 
+from .model_utils import get_layer_output, get_unembedding_matrix
+
 from .data_config_classes import (
     CrosscoderVisConfig,
     CrosscoderVisLayoutConfig,
@@ -70,7 +72,7 @@ class ActivationCache:
 
     def __contains__(self, key):
         return key in self.cache
-    
+
     def get(self, key, default=None):
         return self.cache.get(key, default)
 
@@ -307,10 +309,10 @@ def parse_feature_data(
                 total_tokens = feat_acts.numel()
                 active_tokens = (feat_acts > 1e-8).sum().item()  # Same threshold as featAct
                 density_percent = (active_tokens / total_tokens) * 100 if total_tokens > 0 else 0
-                
+
                 # Only include non-zero activations for histogram to avoid zero-heavy distribution
                 non_zero_acts = feat_acts[feat_acts > 1e-8]
-                
+
                 if non_zero_acts.numel() > 0:
                     hist_data = ActsHistogramData.from_data(
                         data=non_zero_acts,
@@ -345,53 +347,54 @@ def parse_feature_data(
     # ! Cross-Layer Trajectory Analysis
     if layout.cross_layer_trajectory_cfg is not None:
         from .data_storing_fns import CrossLayerTrajectoryData
-        
+
         trajectory_cfg = layout.cross_layer_trajectory_cfg
         cross_layer_trajectory_data = []
-        
+
         for i, feat in enumerate(feature_indices):
             if feat in all_feat_acts:
                 feat_acts = all_feat_acts[feat]  # shape [batch, seq]
-                
+
                 # Compute layer contributions to the final feature activation
                 # This shows how much each layer contributes to the crosscoder's output
                 layer_contributions = []
-                
+
                 # Get the raw activations for this feature from each layer
                 batch_size, seq_len = feat_acts.shape
                 n_layers = crosscoder.num_layers
-                
+
                 # Process tokens in smaller batches to avoid memory issues
                 all_contributions = []
                 sample_size = min(trajectory_cfg.n_sequences * 10, batch_size * seq_len)  # Get more samples to choose from
-                
+
                 # Sample tokens with highest activations
                 flat_acts = feat_acts.flatten()
                 if flat_acts.max() > 1e-8:  # Only if feature actually activates
                     top_indices = torch.topk(flat_acts, k=min(sample_size, flat_acts.numel()), largest=True).indices
-                    
+
                     # Convert back to batch/seq indices
                     batch_indices = top_indices // seq_len
                     seq_indices = top_indices % seq_len
-                    
+
                     # Get the original stacked acts from cache and compute layer contributions
                     for idx_i in range(0, min(len(batch_indices), trajectory_cfg.n_sequences), 1):
                         b_idx = int(batch_indices[idx_i])
                         s_idx = int(seq_indices[idx_i])
-                        
+
                         # Get activations for this token across all layers
                         if b_idx < tokens.shape[0] and s_idx < tokens.shape[1]:
                             # Run model to get layer activations for this specific token
-                            with model.trace(tokens[b_idx:b_idx+1]):
+                            single_token_batch = tokens[b_idx:b_idx+1]
+                            with model.trace(single_token_batch):
                                 layer_acts = []
                                 for layer_idx in range(n_layers):
-                                    resid = model.transformer.h[layer_idx].output[0].save()
+                                    resid = get_layer_output(model, layer_idx, None)
                                     layer_acts.append(resid)
-                            
+
                             # Stack layer activations: [1, seq, n_layers, d_model]
                             stacked_acts = torch.stack([act.value for act in layer_acts], dim=2)
                             token_acts = stacked_acts[0, s_idx, :, :]  # [n_layers, d_model]
-                            
+
                             # Compute contribution of each layer to the final feature activation
                             layer_contributions_for_token = []
                             for layer_idx in range(n_layers):
@@ -399,14 +402,14 @@ def parse_feature_data(
                                 layer_weight = crosscoder.W_enc[layer_idx, :, feat]  # [d_model]
                                 contribution = torch.dot(layer_input.squeeze(), layer_weight).item()
                                 layer_contributions_for_token.append(contribution)
-                            
+
                             all_contributions.append(layer_contributions_for_token)
-                
+
                 # Create trajectory data
                 if all_contributions:
                     # Normalize trajectories to [0, 1] if requested
                     trajectories = all_contributions[:trajectory_cfg.n_sequences]
-                    
+
                     if trajectory_cfg.normalize:
                         for i, traj in enumerate(trajectories):
                             traj_tensor = torch.tensor(traj)
@@ -414,23 +417,23 @@ def parse_feature_data(
                             if traj_max > traj_min:
                                 normalized = (traj_tensor - traj_min) / (traj_max - traj_min)
                                 trajectories[i] = normalized.tolist()
-                    
+
                     # Compute mean trajectory
-                    mean_trajectory = [sum(traj[layer_idx] for traj in trajectories) / len(trajectories) 
+                    mean_trajectory = [sum(traj[layer_idx] for traj in trajectories) / len(trajectories)
                                      for layer_idx in range(n_layers)]
-                    
+
                     # Find peak layer
                     peak_layer = int(np.argmax(mean_trajectory))
-                    
+
                     sequence_labels = [f"Token {i+1}" for i in range(len(trajectories))]
-                    
+
                 else:
                     # No activations - create empty data
                     trajectories = []
                     mean_trajectory = [0.0] * n_layers
                     peak_layer = 0
                     sequence_labels = []
-                
+
                 cross_layer_trajectory_data.append(CrossLayerTrajectoryData(
                     layers=list(range(n_layers)),
                     trajectories=trajectories,
@@ -447,7 +450,7 @@ def parse_feature_data(
                     mean_trajectory=[0.0] * crosscoder.num_layers,
                     peak_layer=0
                 ))
-        
+
         for i, feat in enumerate(feature_indices):
             feature_data_dict[feat]['crossLayerTrajectory'] = cross_layer_trajectory_data[i]
 
@@ -476,18 +479,18 @@ def parse_feature_data(
                 else:
                     valid_feat_acts = feat_acts
                     valid_seq_offset = 0
-                
+
                 # Calculate total sequences needed
                 total_sequences = min(
-                    layout.seq_cfg.top_acts_group_size + 
+                    layout.seq_cfg.top_acts_group_size +
                     layout.seq_cfg.n_quantiles * layout.seq_cfg.quantile_group_size,
                     valid_feat_acts.numel()
                 )
-                
+
                 if total_sequences == 0 or valid_feat_acts.numel() == 0:
                     # Handle empty case
                     batch_indices = torch.tensor([], dtype=torch.long)
-                    seq_indices = torch.tensor([], dtype=torch.long) 
+                    seq_indices = torch.tensor([], dtype=torch.long)
                     topk_values = torch.tensor([])
                 else:
                     # Flatten and get top-k indices
@@ -495,7 +498,7 @@ def parse_feature_data(
                     topk_values, topk_flat_indices = torch.topk(
                         flat_acts, k=total_sequences, largest=True
                     )
-                    
+
                     # Convert back to batch/seq indices
                     valid_seq_len = valid_feat_acts.shape[1]
                     batch_indices = topk_flat_indices // valid_seq_len
@@ -518,19 +521,19 @@ def parse_feature_data(
                         # Get full sequence tokens and activations
                         full_seq_tokens = tokens[batch_idx].cpu().numpy()
                         full_seq_acts = feat_acts[batch_idx].cpu().numpy()
-                        
+
                         # Apply buffer windowing around the peak activation
                         if layout.seq_cfg.buffer is not None:
                             buffer_start, buffer_end = layout.seq_cfg.buffer
-                            
+
                             # Calculate window bounds around the peak token
                             window_start = max(0, seq_idx - buffer_start)
                             window_end = min(len(full_seq_tokens), seq_idx + buffer_end + 1)
-                            
+
                             # Extract windowed tokens and activations
                             windowed_tokens = full_seq_tokens[window_start:window_end]
                             windowed_acts = full_seq_acts[window_start:window_end]
-                            
+
                             # Adjust the feat_acts_idx to be relative to the windowed sequence
                             windowed_feat_idx = seq_idx - window_start
                         else:
@@ -548,7 +551,7 @@ def parse_feature_data(
                         top_logits_list = []
                         bottom_token_ids_list = []
                         bottom_logits_list = []
-                        
+
                         for token_idx in range(seq_len_actual):
                             if token_idx == 0:  # First token has no prediction
                                 loss_contribution.append(0.0)
@@ -562,7 +565,7 @@ def parse_feature_data(
                                 act_magnitude = float(windowed_acts[token_idx - 1])
                                 # Scale activation to reasonable loss contribution range
                                 loss_contribution.append(act_magnitude * 0.1)
-                                
+
                                 # For hover data, show simple placeholder values
                                 # In a full implementation, these would be computed via model forward pass
                                 if act_magnitude > 0.1:  # Only show hover for significant activations
@@ -630,19 +633,19 @@ def parse_feature_data(
                                 # Get full sequence tokens and activations
                                 full_seq_tokens = tokens[batch_idx].cpu().numpy()
                                 full_seq_acts = feat_acts[batch_idx].cpu().numpy()
-                                
+
                                 # Apply buffer windowing around the peak activation
                                 if layout.seq_cfg.buffer is not None:
                                     buffer_start, buffer_end = layout.seq_cfg.buffer
-                                    
+
                                     # Calculate window bounds around the peak token
                                     window_start = max(0, seq_idx - buffer_start)
                                     window_end = min(len(full_seq_tokens), seq_idx + buffer_end + 1)
-                                    
+
                                     # Extract windowed tokens and activations
                                     windowed_tokens = full_seq_tokens[window_start:window_end]
                                     windowed_acts = full_seq_acts[window_start:window_end]
-                                    
+
                                     # Adjust the feat_acts_idx to be relative to the windowed sequence
                                     windowed_feat_idx = seq_idx - window_start
                                 else:
@@ -659,7 +662,7 @@ def parse_feature_data(
                                 top_logits_list = []
                                 bottom_token_ids_list = []
                                 bottom_logits_list = []
-                                
+
                                 for token_idx in range(seq_len_actual):
                                     if token_idx == 0:  # First token has no prediction
                                         loss_contribution.append(0.0)
@@ -672,7 +675,7 @@ def parse_feature_data(
                                         act_magnitude = float(windowed_acts[token_idx - 1])
                                         # Scale activation to reasonable loss contribution range
                                         loss_contribution.append(act_magnitude * 0.1)
-                                        
+
                                         # For hover data, show simple values for significant activations
                                         if act_magnitude > 0.1:
                                             top_token_ids_list.append([model.tokenizer.vocab_size - 1])  # Placeholder
@@ -726,7 +729,7 @@ def parse_feature_data(
             feature_data_dict[feat]["seqMultiGroup"] = all_seq_group_data[feat]
 
     time_logs["(2) Getting data for sequences"] = time.monotonic() - t0
-    
+
     # ! New Cross-Layer Visualizations
     from .crosslayer_vis_fns import (
         compute_decoder_norms,
@@ -735,27 +738,27 @@ def parse_feature_data(
         compute_direct_logit_attribution,
         compute_feature_correlation,
     )
-    
+
     # Plot 1: Decoder Norms
     if layout.decoder_norms_cfg is not None:
         decoder_norms_data = compute_decoder_norms(crosscoder, feature_indices)
         for feat in feature_indices:
             feature_data_dict[feat]["decoderNorms"] = decoder_norms_data
-    
+
     # Plot 2: Activation Heatmap
     if layout.activation_heatmap_cfg is not None:
         # Use the example text from config
         example_text = layout.activation_heatmap_cfg.example_text
-        example_tokens = model.tokenizer(example_text, return_tensors="pt", 
+        example_tokens = model.tokenizer(example_text, return_tensors="pt",
                                        max_length=128, truncation=True)["input_ids"]
         token_strings = [model.tokenizer.decode([tid]) for tid in example_tokens[0]]
-        
+
         for feat in feature_indices:
             heatmap_data = compute_activation_heatmap(
                 crosscoder, model, feat, example_tokens, token_strings
             )
             feature_data_dict[feat]["activationHeatmap"] = heatmap_data
-    
+
     # Plot 3: Aggregated Activation
     if layout.aggregated_activation_cfg is not None:
         aggregated_data = compute_aggregated_activation(
@@ -765,7 +768,7 @@ def parse_feature_data(
         )
         for feat in feature_indices:
             feature_data_dict[feat]["aggregatedActivation"] = aggregated_data
-    
+
     # Plot 4: Direct Logit Attribution
     if layout.dla_cfg is not None:
         for feat in feature_indices:
@@ -773,7 +776,7 @@ def parse_feature_data(
                 crosscoder, model, feat, top_k=layout.dla_cfg.top_k
             )
             feature_data_dict[feat]["dla"] = dla_data
-    
+
     # Plot 5: Feature Correlation
     if layout.feature_correlation_cfg is not None:
         correlation_data = compute_feature_correlation(
@@ -836,7 +839,6 @@ def get_feature_data(
 
     # Pre-allocate storage for efficiency
     batch_size, seq_len = tokens.shape
-    
     for feat_idx in feature_indices:
         all_crosscoder_acts[feat_idx] = torch.zeros((batch_size, seq_len), dtype=torch.float32)
 
@@ -848,19 +850,23 @@ def get_feature_data(
         with model.trace(batch_tokens):
             layer_acts = []
             for layer_idx in range(crosscoder.num_layers):
-                resid = model.transformer.h[layer_idx].output[0].save()
+                resid = get_layer_output(model, layer_idx, None)
                 layer_acts.append(resid)
 
         # Stack layer activations
         stacked_acts = torch.stack([act.value for act in layer_acts], dim=1)
         stacked_acts = stacked_acts.permute(0, 2, 1, 3)
 
+        # Move stacked_acts to same device as crosscoder
+        crosscoder_device = next(crosscoder.parameters()).device
+        stacked_acts = stacked_acts.to(crosscoder_device)
+
         # Encode with crosscoder
         cc_acts = crosscoder.encode(stacked_acts)
 
         # Store only the features we need directly
         for feat_idx in feature_indices:
-            all_crosscoder_acts[feat_idx][i:batch_end] = cc_acts[:, :, feat_idx]
+            all_crosscoder_acts[feat_idx][i:batch_end] = cc_acts[:, :, feat_idx].cpu()
 
     cache["crosscoder_acts"] = all_crosscoder_acts
 
@@ -876,8 +882,7 @@ def get_feature_data(
 
     # Get logit directions
     with torch.no_grad():
-        lm_head = model.lm_head
-        W_U = lm_head.weight.T
+        W_U = get_unembedding_matrix(model)
     feature_out_dir = feature_resid_dir @ W_U
 
     # Parse the feature data
