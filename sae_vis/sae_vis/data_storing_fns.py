@@ -175,7 +175,7 @@ class LayerActivationPlotData:
     activations: list[list[float]]  # Activations for each token across layers
     mean_activations: list[float]  # Mean activation per layer
     token_positions: list[int]  # Token positions for each activation trace
-    
+
     @classmethod
     def from_data(
         cls,
@@ -189,14 +189,14 @@ class LayerActivationPlotData:
             sum(token_acts[i] for token_acts in activations) / len(activations)
             for i in range(len(layers))
         ]
-        
+
         return cls(
             layers=layers,
             activations=activations,
             mean_activations=mean_activations,
             token_positions=token_positions
         )
-    
+
     def data(
         self,
         layout: CrosscoderVisLayoutConfig,
@@ -214,12 +214,12 @@ class LayerActivationPlotData:
 
 @dataclass
 class CrossLayerTrajectoryData:
-    """Data for cross-layer feature trajectory visualization showing layer contributions"""
+    """Data for cross-layer feature trajectory visualization showing decoder norms across layers"""
     layers: list[int]  # Layer indices (0 to n_layers-1)
-    trajectories: list[list[float]]  # Each trajectory shows layer contributions for one token sequence
-    sequence_labels: list[str]  # Labels for each trajectory (e.g. "Token 1", "Token 2")
-    mean_trajectory: list[float]  # Mean contribution per layer across all sequences
-    peak_layer: int  # Layer with highest mean contribution
+    trajectories: list[list[float]]  # Each trajectory shows decoder norms per layer (typically single trajectory)
+    sequence_labels: list[str]  # Labels for each trajectory (e.g. "Feature norm")
+    mean_trajectory: list[float]  # Decoder norm per layer (same as trajectory for single trajectory)
+    peak_layer: int  # Layer with highest decoder norm
 
     def data(
         self,
@@ -229,7 +229,7 @@ class CrossLayerTrajectoryData:
     ) -> dict[str, Any]:
         cfg = layout.cross_layer_trajectory_cfg
         assert cfg is not None, "CrossLayerTrajectoryConfig is required for CrossLayerTrajectoryData"
-        
+
         return {
             "type": "cross_layer_trajectory",
             "layers": self.layers,
@@ -611,7 +611,7 @@ class SequenceData:
                     if bold_idx == "max":
                         # Find tokens with significant activations (same threshold as featAct)
                         significant_acts = [(j, abs(feat_acts[j])) for j in range(len(feat_acts)) if abs(feat_acts[j]) > 1e-8]
-                        
+
                         if significant_acts:
                             # Find the position with the maximum activation among significant tokens
                             max_pos = max(significant_acts, key=lambda x: x[1])[0]
@@ -623,7 +623,7 @@ class SequenceData:
                             is_max_token = (i == max_pos)
                     else:
                         is_max_token = False
-                    
+
                     kwargs_bold["isBold"] = (bold_idx == i) or is_max_token
                     if kwargs_bold["isBold"] and permanent_line:
                         kwargs_bold["permanentLine"] = True
@@ -1010,7 +1010,7 @@ class CrosscoderVisData:
         assert isinstance(feature, int)
 
         all_feature_data = list(self.feature_data_dict.items())
-        
+
         # Extract activation densities efficiently without calling .data()
         feature_densities = {}
         for feat, components_dict in all_feature_data:
@@ -1030,7 +1030,7 @@ class CrosscoderVisData:
                     feature_densities[feat] = 0.0
             else:
                 feature_densities[feat] = 0.0
-        
+
         if verbose:
             all_feature_data = tqdm(all_feature_data, desc="Saving feature-centric vis")
 
@@ -1041,7 +1041,7 @@ class CrosscoderVisData:
             density = feature_densities[feat]
             FEATURE_DENSITIES[str(feat)] = density
             DATA[str(feat)] = {}
-            
+
             # Map component names properly
             for comp_name in layout.components:
                 # Map from config names to data keys
@@ -1056,7 +1056,7 @@ class CrosscoderVisData:
                     data_key = "dla"
                 elif comp_name == "crossLayerFeatureCorrelation":
                     data_key = "featureCorrelation"
-                
+
                 if data_key in components_dict:
                     DATA[str(feat)][comp_name] = components_dict[data_key].data(
                         layout=layout, decode_fn=self.decode_fn
@@ -1183,7 +1183,7 @@ class CrossLayerDecoderNormsData:
     feature_indices: list[int]
     decoder_norms: dict[int, list[float]]  # feature_idx -> list of norms per layer
     n_layers: int
-    
+
     def data(self, **kwargs):
         # Return data for JavaScript to render
         return {
@@ -1201,7 +1201,7 @@ class CrossLayerActivationHeatmapData:
     token_strings: list[str]
     activation_matrix: list[list[float]]  # [n_layers, seq_len]
     n_layers: int
-    
+
     def data(self, **kwargs):
         # Return data for JavaScript to render
         return {
@@ -1220,7 +1220,7 @@ class CrossLayerAggregatedActivationData:
     mean_activations: dict[int, list[float]]  # feature_idx -> list of mean acts per layer
     n_layers: int
     n_samples_processed: int
-    
+
     def data(self, **kwargs):
         # Return data for JavaScript to render
         return {
@@ -1239,7 +1239,7 @@ class CrossLayerDLAData:
     dla_by_layer: dict[int, dict[str, Any]]  # layer_idx -> {top_tokens, top_values, bottom_tokens, bottom_values}
     n_layers: int
     top_k: int
-    
+
     def data(self, **kwargs):
         # Return data for JavaScript to render
         return {
@@ -1258,7 +1258,7 @@ class CrossLayerFeatureCorrelationData:
     feature_indices: list[int]
     n_features: int
     n_samples_processed: int
-    
+
     def data(self, **kwargs):
         # Return data for JavaScript to render
         return {

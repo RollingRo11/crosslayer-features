@@ -22,24 +22,24 @@ from model_utils import get_layer_output
 
 cc_config = {
     "seed": 51,
-    "batch_size": 1024, # number of activations processed in each training step
-    "buffer_mult": 16, # multiplier for buffer size
-    "lr": 1e-4, # learning rate for AdamW
-    "num_tokens": int(4e8), # total number of tokens to process during the training run
-    "l1_coefficient": 1.0, # weight for l1 sparsity reg (reduced from 2.0)
+    "batch_size": 2048,
+    "buffer_mult": 16,
+    "lr": 1e-4,
+    "num_tokens": int(4e8),
+    "l1_coefficient": 1.0,
     "beta1": 0.9,
     "beta2": 0.999,
-    "context": 128, # context length for the model
+    "context": 128,
     "device": "cuda",
-    "model_batch_size": 16, # batch size when running the base model to generate activations
+    "model_batch_size": 16,
     "log_interval": 100,
-    "save_interval": 250000,
+    "save_interval": 50000,
     "model_name": "pythia",
     "dtype": torch.bfloat16,
-    "ae_dim": 16384,
-    "drop_bos": True, # whether or not to drop the beginning of sentence token,
+    "ae_dim": 32768,
+    "drop_bos": True,
     "total_steps": 100000, # increased from 100000
-    "normalization": "layer_wise", # Options: "layer_wise", "global", "none"
+    "normalization": "layer_wise",
     "optimizer": "adamw" # Options: "adamw", "sophia"
 }
 

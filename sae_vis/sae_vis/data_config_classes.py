@@ -172,25 +172,25 @@ class LayerActivationPlotConfig(BaseComponentConfig):
         return LAYER_ACTIVATION_PLOT_CONFIG_HELP
 
 
-@dataclass 
+@dataclass
 class CrossLayerTrajectoryConfig(BaseComponentConfig):
-    """Configuration for cross-layer feature trajectory plot"""
-    n_sequences: int = 20  # Number of sequences to show trajectories for
+    """Configuration for cross-layer feature decoder norm trajectory plot"""
+    n_sequences: int = 1  # Not used for decoder norms (always shows single trajectory)
     height: int = 400  # Height of the plot
-    normalize: bool = True  # Whether to normalize trajectories to [0, 1]
-    show_mean: bool = True  # Whether to show mean trajectory
-    
+    normalize: bool = True  # Whether to normalize decoder norms to [0, 1]
+    show_mean: bool = True  # Whether to show the trajectory line
+
     def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
         assert isinstance(other, self.__class__)
         return self.n_sequences <= other.n_sequences
-    
+
     @property
     def help_dict(self) -> dict[str, str]:
         return {
-            "n_sequences": "Number of sequences to show trajectories for",
+            "n_sequences": "Not used for decoder norm trajectory (always single trajectory)",
             "height": "Height of the trajectory plot",
-            "normalize": "Whether to normalize trajectories to [0, 1] range",
-            "show_mean": "Whether to show mean trajectory across all sequences"
+            "normalize": "Whether to normalize decoder norms to [0, 1] range",
+            "show_mean": "Whether to show the decoder norm trajectory line"
         }
 
 
@@ -204,7 +204,7 @@ class CrossLayerDecoderNormsConfig(BaseComponentConfig):
 class CrossLayerActivationHeatmapConfig(BaseComponentConfig):
     """Configuration for activation heatmap (Plot 2)"""
     example_text: str = "The quick brown fox jumps over the lazy dog."
-    
+
     @property
     def help_dict(self) -> dict[str, str]:
         return {
@@ -217,7 +217,7 @@ class CrossLayerAggregatedActivationConfig(BaseComponentConfig):
     """Configuration for aggregated activation profile (Plot 3)"""
     max_samples: int = 100
     batch_size: int = 8
-    
+
     @property
     def help_dict(self) -> dict[str, str]:
         return {
@@ -230,7 +230,7 @@ class CrossLayerAggregatedActivationConfig(BaseComponentConfig):
 class CrossLayerDLAConfig(BaseComponentConfig):
     """Configuration for direct logit attribution (Plot 4)"""
     top_k: int = 10
-    
+
     @property
     def help_dict(self) -> dict[str, str]:
         return {
@@ -244,7 +244,7 @@ class CrossLayerFeatureCorrelationConfig(BaseComponentConfig):
     n_features: int = 50
     max_samples: int = 50
     batch_size: int = 16
-    
+
     @property
     def help_dict(self) -> dict[str, str]:
         return {
@@ -380,7 +380,7 @@ class CrosscoderVisLayoutConfig:
     layer_activation_plot_cfg: LayerActivationPlotConfig | None = None
     cross_layer_trajectory_cfg: CrossLayerTrajectoryConfig | None = None
     prompt_cfg: PromptConfig | None = None
-    
+
     # New cross-layer visualization configs
     decoder_norms_cfg: CrossLayerDecoderNormsConfig | None = None
     activation_heatmap_cfg: CrossLayerActivationHeatmapConfig | None = None
@@ -623,7 +623,7 @@ class CrosscoderVisLayoutConfig:
         )
 
 
-KEY_LAYOUT_VIS = """Key: 
+KEY_LAYOUT_VIS = """Key:
   the tree shows which components will be displayed in each column (from left to right)
   arguments are [b #00aa00]green[/]
   arguments changed from their default are [b dark_orange]orange[/], with default in brackets

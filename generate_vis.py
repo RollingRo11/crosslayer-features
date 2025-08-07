@@ -286,9 +286,9 @@ def main():
 
     # Add cross-layer trajectory visualization
     config.feature_centric_layout.cross_layer_trajectory_cfg = CrossLayerTrajectoryConfig(
-        n_sequences=20,  # Show trajectories for 20 token sequences
+        n_sequences=1,  # Not used for decoder norms (always single trajectory)
         height=400,
-        normalize=True,  # Normalize to [0, 1] like in the reference image
+        normalize=True,  # Normalize decoder norms to [0, 1] like in the reference image
         show_mean=True,
     )
 

@@ -353,106 +353,45 @@ def parse_feature_data(
         cross_layer_trajectory_data = []
 
         for i, feat in enumerate(feature_indices):
-            if feat in all_feat_acts:
-                feat_acts = all_feat_acts[feat]  # shape [batch, seq]
+            n_layers = crosscoder.num_layers
 
-                # Compute layer contributions to the final feature activation
-                # This shows how much each layer contributes to the crosscoder's output
-                layer_contributions = []
+            # Get decoder weights for this feature across all layers
+            decoder_weights = crosscoder.W_dec[feat]  # Shape: (n_layers, d_model)
 
-                # Get the raw activations for this feature from each layer
-                batch_size, seq_len = feat_acts.shape
-                n_layers = crosscoder.num_layers
+            # Compute L2 norm for each layer to get the feature norm trajectory
+            decoder_norms = torch.norm(decoder_weights, dim=1).cpu().numpy().tolist()
 
-                # Process tokens in smaller batches to avoid memory issues
-                all_contributions = []
-                sample_size = min(trajectory_cfg.n_sequences * 10, batch_size * seq_len)  # Get more samples to choose from
+            # Create a single trajectory showing decoder norms across layers
+            trajectories = [decoder_norms]  # Single trajectory for decoder norms
 
-                # Sample tokens with highest activations
-                flat_acts = feat_acts.flatten()
-                if flat_acts.max() > 1e-8:  # Only if feature actually activates
-                    top_indices = torch.topk(flat_acts, k=min(sample_size, flat_acts.numel()), largest=True).indices
-
-                    # Convert back to batch/seq indices
-                    batch_indices = top_indices // seq_len
-                    seq_indices = top_indices % seq_len
-
-                    # Get the original stacked acts from cache and compute layer contributions
-                    for idx_i in range(0, min(len(batch_indices), trajectory_cfg.n_sequences), 1):
-                        b_idx = int(batch_indices[idx_i])
-                        s_idx = int(seq_indices[idx_i])
-
-                        # Get activations for this token across all layers
-                        if b_idx < tokens.shape[0] and s_idx < tokens.shape[1]:
-                            # Run model to get layer activations for this specific token
-                            single_token_batch = tokens[b_idx:b_idx+1]
-                            with model.trace(single_token_batch):
-                                layer_acts = []
-                                for layer_idx in range(n_layers):
-                                    resid = get_layer_output(model, layer_idx, None)
-                                    layer_acts.append(resid)
-
-                            # Stack layer activations: [1, seq, n_layers, d_model]
-                            stacked_acts = torch.stack([act.value for act in layer_acts], dim=2)
-                            token_acts = stacked_acts[0, s_idx, :, :]  # [n_layers, d_model]
-
-                            # Compute contribution of each layer to the final feature activation
-                            layer_contributions_for_token = []
-                            for layer_idx in range(n_layers):
-                                layer_input = token_acts[layer_idx:layer_idx+1, :]  # [1, d_model]
-                                layer_weight = crosscoder.W_enc[layer_idx, :, feat]  # [d_model]
-                                # Ensure dtype compatibility for dot product
-                                layer_input_squeezed = layer_input.squeeze().to(dtype=layer_weight.dtype)
-                                contribution = torch.dot(layer_input_squeezed, layer_weight).item()
-                                layer_contributions_for_token.append(contribution)
-
-                            all_contributions.append(layer_contributions_for_token)
-
-                # Create trajectory data
-                if all_contributions:
-                    # Normalize trajectories to [0, 1] if requested
-                    trajectories = all_contributions[:trajectory_cfg.n_sequences]
-
-                    if trajectory_cfg.normalize:
-                        for i, traj in enumerate(trajectories):
-                            traj_tensor = torch.tensor(traj)
-                            traj_min, traj_max = traj_tensor.min(), traj_tensor.max()
-                            if traj_max > traj_min:
-                                normalized = (traj_tensor - traj_min) / (traj_max - traj_min)
-                                trajectories[i] = normalized.tolist()
-
-                    # Compute mean trajectory
-                    mean_trajectory = [sum(traj[layer_idx] for traj in trajectories) / len(trajectories)
-                                     for layer_idx in range(n_layers)]
-
-                    # Find peak layer
-                    peak_layer = int(np.argmax(mean_trajectory))
-
-                    sequence_labels = [f"Token {i+1}" for i in range(len(trajectories))]
-
+            # Normalize trajectory to [0, 1] if requested
+            if trajectory_cfg.normalize and len(decoder_norms) > 0:
+                norms_tensor = torch.tensor(decoder_norms)
+                norm_min, norm_max = norms_tensor.min(), norms_tensor.max()
+                if norm_max > norm_min:
+                    normalized_norms = (norms_tensor - norm_min) / (norm_max - norm_min)
+                    trajectories = [normalized_norms.tolist()]
+                    mean_trajectory = normalized_norms.tolist()
                 else:
-                    # No activations - create empty data
-                    trajectories = []
-                    mean_trajectory = [0.0] * n_layers
-                    peak_layer = 0
-                    sequence_labels = []
-
-                cross_layer_trajectory_data.append(CrossLayerTrajectoryData(
-                    layers=list(range(n_layers)),
-                    trajectories=trajectories,
-                    sequence_labels=sequence_labels,
-                    mean_trajectory=mean_trajectory,
-                    peak_layer=peak_layer
-                ))
+                    # All norms are the same, set to 0.5 for normalized view
+                    trajectories = [[0.5] * n_layers]
+                    mean_trajectory = [0.5] * n_layers
             else:
-                # No activations for this feature
-                cross_layer_trajectory_data.append(CrossLayerTrajectoryData(
-                    layers=list(range(crosscoder.num_layers)),
-                    trajectories=[],
-                    sequence_labels=[],
-                    mean_trajectory=[0.0] * crosscoder.num_layers,
-                    peak_layer=0
-                ))
+                mean_trajectory = decoder_norms
+
+            # Find peak layer (layer with highest norm)
+            peak_layer = int(np.argmax(decoder_norms)) if decoder_norms else 0
+
+            # Label as decoder norms rather than token sequences
+            sequence_labels = ["Feature norm"]
+
+            cross_layer_trajectory_data.append(CrossLayerTrajectoryData(
+                layers=list(range(n_layers)),
+                trajectories=trajectories,
+                sequence_labels=sequence_labels,
+                mean_trajectory=mean_trajectory,
+                peak_layer=peak_layer
+            ))
 
         for i, feat in enumerate(feature_indices):
             feature_data_dict[feat]['crossLayerTrajectory'] = cross_layer_trajectory_data[i]
