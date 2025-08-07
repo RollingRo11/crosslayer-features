@@ -24,7 +24,7 @@ cc_config = {
     "seed": 51,
     "batch_size": 2048,
     "buffer_mult": 16,
-    "lr": 1e-4,
+    "lr": 3e-5,
     "num_tokens": int(4e8),
     "l1_coefficient": 1.0,
     "beta1": 0.9,
@@ -36,7 +36,7 @@ cc_config = {
     "save_interval": 50000,
     "model_name": "pythia",
     "dtype": torch.bfloat16,
-    "ae_dim": 32768,
+    "ae_dim": 2**15,
     "drop_bos": True,
     "total_steps": 100000, # increased from 100000
     "normalization": "layer_wise",
