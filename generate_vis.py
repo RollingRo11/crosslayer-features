@@ -96,9 +96,6 @@ def load_latest_checkpoint(device=None):
     crosscoder.b_enc.data = checkpoint['b_enc'].to(device)
     crosscoder.b_dec.data = checkpoint['b_dec'].to(device)
 
-    # Convert crosscoder to float32 to avoid dtype mismatches with model activations
-    crosscoder = crosscoder.to(torch.float32)
-
     crosscoder.eval()
     return crosscoder, cfg
 

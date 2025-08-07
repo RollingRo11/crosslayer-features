@@ -214,7 +214,8 @@ def parse_feature_data(
     # Get the logits of all features (i.e. the directions this feature writes to the logit output)
     with torch.no_grad():
         W_U = get_unembedding_matrix(model)  # shape: [d_model, d_vocab]
-
+        # Ensure dtype compatibility for matrix multiplication
+        W_U = W_U.to(dtype=feature_resid_dir.dtype)
 
     logits = einops.einsum(
         feature_resid_dir, W_U, "feats d_model, d_model d_vocab -> feats d_vocab"
@@ -400,7 +401,9 @@ def parse_feature_data(
                             for layer_idx in range(n_layers):
                                 layer_input = token_acts[layer_idx:layer_idx+1, :]  # [1, d_model]
                                 layer_weight = crosscoder.W_enc[layer_idx, :, feat]  # [d_model]
-                                contribution = torch.dot(layer_input.squeeze(), layer_weight).item()
+                                # Ensure dtype compatibility for dot product
+                                layer_input_squeezed = layer_input.squeeze().to(dtype=layer_weight.dtype)
+                                contribution = torch.dot(layer_input_squeezed, layer_weight).item()
                                 layer_contributions_for_token.append(contribution)
 
                             all_contributions.append(layer_contributions_for_token)
@@ -864,9 +867,10 @@ def get_feature_data(
         stacked_acts = torch.stack([act.value for act in layer_acts], dim=1)
         stacked_acts = stacked_acts.permute(0, 2, 1, 3)
 
-        # Move stacked_acts to same device as crosscoder
+        # Move stacked_acts to same device and dtype as crosscoder
         crosscoder_device = next(crosscoder.parameters()).device
-        stacked_acts = stacked_acts.to(crosscoder_device)
+        crosscoder_dtype = next(crosscoder.parameters()).dtype
+        stacked_acts = stacked_acts.to(device=crosscoder_device, dtype=crosscoder_dtype)
 
         # Encode with crosscoder
         cc_acts = crosscoder.encode(stacked_acts)
@@ -896,7 +900,8 @@ def get_feature_data(
     # Get logit directions
     with torch.no_grad():
         W_U = get_unembedding_matrix(model)
-
+        # Ensure dtype compatibility for matrix multiplication
+        W_U = W_U.to(dtype=feature_resid_dir.dtype)
     feature_out_dir = feature_resid_dir @ W_U
 
     # Create progress bar for feature parsing
