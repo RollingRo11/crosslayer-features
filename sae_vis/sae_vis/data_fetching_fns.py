@@ -359,7 +359,9 @@ def parse_feature_data(
             decoder_weights = crosscoder.W_dec[feat]  # Shape: (n_layers, d_model)
 
             # Compute L2 norm for each layer to get the feature norm trajectory
-            decoder_norms = torch.norm(decoder_weights, dim=1).cpu().numpy().tolist()
+            # Convert to float32 to avoid BFloat16 issues with torch.norm on CPU
+            decoder_weights_float = decoder_weights.float()
+            decoder_norms = torch.norm(decoder_weights_float, dim=1).cpu().numpy().tolist()
 
             # Create a single trajectory showing decoder norms across layers
             trajectories = [decoder_norms]  # Single trajectory for decoder norms
