@@ -19,16 +19,11 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent / "sae_vis" / "sae_vis"))
 from model_utils import get_layer_output
 
-# test
-model = nnsight.LanguageModel("gpt2", device_map="auto")
-config = model.config
-model_config = config.to_dict() # type: ignore
-
 
 cc_config = {
     "seed": 51,
-    "batch_size": 2048, # number of activations processed in each training step
-    "buffer_mult": 512, # multiplier for buffer size
+    "batch_size": 1024, # number of activations processed in each training step
+    "buffer_mult": 16, # multiplier for buffer size
     "lr": 4e-5, # learning rate for AdamW
     "num_tokens": int(4e8), # total number of tokens to process during the training run
     "l1_coefficient": 2.0, # weight for l1 sparsity reg (reduced from 2.0)
@@ -39,9 +34,9 @@ cc_config = {
     "model_batch_size": 16, # batch size when running the base model to generate activations
     "log_interval": 100,
     "save_interval": 250000,
-    "model_name": "gpt2",
+    "model_name": "pythia",
     "dtype": torch.float32,
-    "ae_dim": 8192,
+    "ae_dim": 4096,
     "drop_bos": True, # whether or not to drop the beginning of sentence token,
     "total_steps": 250000, # increased from 100000
     "normalization": "layer_wise", # Options: "layer_wise", "global", "none"
@@ -364,7 +359,15 @@ class Buffer:
 class Trainer:
     def __init__(self, cfg, use_wandb=True):
         self.cfg = cfg
-        self.model = model
+
+
+        if self.cfg["model_name"] == "gpt2":
+            self.model = nnsight.LanguageModel("gpt2", device_map="auto")
+            self.context = 1024
+        elif self.cfg["model_name"] == "pythia":
+            self.model = nnsight.LanguageModel("EleutherAI/pythia-2.8b-deduped", device_map="auto")
+            self.context = 2048
+
         self.crosscoder = Crosscoder(cfg)
         self.buffer = Buffer(cfg)
         self.total_steps = cfg["total_steps"]

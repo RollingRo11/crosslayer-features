@@ -213,8 +213,7 @@ def parse_feature_data(
 
     # Get the logits of all features (i.e. the directions this feature writes to the logit output)
     with torch.no_grad():
-        lm_head = model.lm_head
-        W_U = lm_head.weight.T  # shape: [d_model, d_vocab]
+        W_U = get_unembedding_matrix(model)  # shape: [d_model, d_vocab]
 
     logits = einops.einsum(
         feature_resid_dir, W_U, "feats d_model, d_model d_vocab -> feats d_vocab"

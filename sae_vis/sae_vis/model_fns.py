@@ -8,6 +8,7 @@ import nnsight
 from nnsight import LanguageModel
 
 from .utils_fns import VocabType
+from .model_utils import get_unembedding_matrix
 import sys
 sys.path.append('..')
 from crosscoder.crosscoder import Crosscoder
@@ -41,8 +42,8 @@ def resid_final_pre_layernorm_to_logits(x: Tensor, model: LanguageModel):
 
     # Get unembedding weights through model
     with torch.no_grad():
-        lm_head = model.lm_head
-        return x_normalized @ lm_head.weight.T
+        W_U = get_unembedding_matrix(model)
+        return x_normalized @ W_U
 
 
 def load_othello_vocab() -> dict[VocabType, dict[int, str]]:

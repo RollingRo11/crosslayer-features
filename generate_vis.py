@@ -154,6 +154,7 @@ def main():
     # Map model names to actual model identifiers
     model_name_mapping = {
         "gpt2": "gpt2",
+        "pythia": "EleutherAI/pythia-2.8b-deduped",
         "pythia7b": "EleutherAI/pythia-6.9b-deduped",
         "pythia160m": "EleutherAI/pythia-160m-deduped",
         "pythia410m": "EleutherAI/pythia-410m-deduped",
