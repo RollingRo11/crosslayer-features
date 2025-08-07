@@ -24,21 +24,21 @@ cc_config = {
     "seed": 51,
     "batch_size": 1024, # number of activations processed in each training step
     "buffer_mult": 16, # multiplier for buffer size
-    "lr": 4e-5, # learning rate for AdamW
+    "lr": 1e-4, # learning rate for AdamW
     "num_tokens": int(4e8), # total number of tokens to process during the training run
-    "l1_coefficient": 2.0, # weight for l1 sparsity reg (reduced from 2.0)
+    "l1_coefficient": 1.0, # weight for l1 sparsity reg (reduced from 2.0)
     "beta1": 0.9,
     "beta2": 0.999,
-    "context": 2048, # context length for the model
+    "context": 128, # context length for the model
     "device": "cuda",
     "model_batch_size": 16, # batch size when running the base model to generate activations
     "log_interval": 100,
     "save_interval": 250000,
     "model_name": "pythia",
-    "dtype": torch.float32,
-    "ae_dim": 4096,
+    "dtype": torch.bfloat16,
+    "ae_dim": 16384,
     "drop_bos": True, # whether or not to drop the beginning of sentence token,
-    "total_steps": 250000, # increased from 100000
+    "total_steps": 100000, # increased from 100000
     "normalization": "layer_wise", # Options: "layer_wise", "global", "none"
     "optimizer": "adamw" # Options: "adamw", "sophia"
 }
@@ -104,14 +104,18 @@ class Crosscoder(nn.Module):
         nn.init.kaiming_uniform_(self.W_dec, a=1)
 
         dec_init_norm = 0.08
-        self.W_dec.data = (
-            self.W_dec.data / self.W_dec.data.norm(dim=-1, keepdim=True) * dec_init_norm
-        )
+        # self.W_dec.data = (
+        #     self.W_dec.data / self.W_dec.data.norm(dim=-1, keepdim=True) * dec_init_norm
+        # )
+        self.W_dec.data = self.W_dec.data * (dec_init_norm / self.W_dec.data.norm())
+
 
         enc_init_norm = 0.08
-        self.W_enc.data = (
-            self.W_enc.data / self.W_enc.data.norm(dim=-1, keepdim=True) * enc_init_norm
-        )
+
+        # self.W_enc.data = (
+        #     self.W_enc.data / self.W_enc.data.norm(dim=-1, keepdim=True) * enc_init_norm
+        # )
+        self.W_dec.data = self.W_dec.data * (enc_init_norm / self.W_dec.data.norm())
 
         self.b_enc = nn.Parameter(torch.zeros(self.ae_dim, dtype=self.dtype))
         self.b_dec = nn.Parameter(
@@ -307,8 +311,8 @@ class Buffer:
                 sample_batch = self.buffer[sample_indices]
 
                 if normalization_method == "layer_wise":
-                    self.layer_means = sample_batch.mean(dim=0, keepdim=True)  # Shape: (1, n_layers, d_model)
-                    self.layer_stds = sample_batch.std(dim=0, keepdim=True)    # Shape: (1, n_layers, d_model)
+                    self.layer_means = sample_batch.mean(dim=[0, 2], keepdim=True)  # Average over batch and d_model
+                    self.layer_stds = sample_batch.std(dim=[0, 2], keepdim=True)
                 elif normalization_method == "global":
                     global_mean = sample_batch.mean()
                     global_std = sample_batch.std()
@@ -414,10 +418,7 @@ class Trainer:
 
     def step(self):
         acts = self.buffer.next()
-        acts = acts.float().to(self.cfg["device"])
-
-        with torch.no_grad():
-            encoded_acts = self.crosscoder.encode(acts)
+        acts = acts.to(dtype=self.cfg["dtype"], device=self.cfg["device"])
 
         losses = self.crosscoder.return_loss(acts)
         loss = losses.l2_loss + self.get_l1_coeff() * losses.l1_loss
@@ -427,6 +428,10 @@ class Trainer:
         self.optimizer.step()
         self.scheduler.step()
         self.optimizer.zero_grad()
+
+        # Calculate sparsity after gradient updates
+        with torch.no_grad():
+            encoded_acts = self.crosscoder.encode(acts)
 
         loss_dict = {
             "loss": loss.item(),
@@ -481,6 +486,7 @@ class Trainer:
     def analyze_feature_quality(self, n_samples=1000):
         """Analyze the quality of learned features during training"""
         sample_acts = self.buffer.next()[:n_samples]
+        sample_acts = sample_acts.to(dtype=self.cfg["dtype"], device=self.cfg["device"])
 
         with torch.no_grad():
             encoded = self.crosscoder.encode(sample_acts)
