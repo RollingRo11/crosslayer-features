@@ -215,6 +215,7 @@ def parse_feature_data(
     with torch.no_grad():
         W_U = get_unembedding_matrix(model)  # shape: [d_model, d_vocab]
 
+
     logits = einops.einsum(
         feature_resid_dir, W_U, "feats d_model, d_model d_vocab -> feats d_vocab"
     )
@@ -895,6 +896,7 @@ def get_feature_data(
     # Get logit directions
     with torch.no_grad():
         W_U = get_unembedding_matrix(model)
+
     feature_out_dir = feature_resid_dir @ W_U
 
     # Create progress bar for feature parsing
