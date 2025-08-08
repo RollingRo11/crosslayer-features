@@ -9,6 +9,7 @@ from typing import NamedTuple
 from pathlib import Path
 import tqdm
 import json
+import numpy as np
 from datasets import load_dataset
 from torch.nn.utils import clip_grad_norm_
 from sophia import SophiaG
@@ -16,7 +17,6 @@ import sys
 from pathlib import Path
 import os
 
-# Add sae_vis to path for model utilities
 sys.path.append(str(Path(__file__).parent.parent / "sae_vis" / "sae_vis"))
 from model_utils import get_layer_output
 
@@ -41,7 +41,7 @@ cc_config = {
     "dtype": torch.bfloat16,
     "ae_dim": 2**15,
     "drop_bos": True,
-    "total_steps": 100000, # increased from 100000
+    "total_steps": 100000,
     "normalization": "layer_wise",
     "optimizer": "adamw" # Options: "adamw", "sophia"
 }
@@ -66,57 +66,45 @@ class Crosscoder(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.model = model
+        self.modelcfg = self.model.config.to_dict() # type: ignore
         if self.cfg["model_name"] == "gpt2":
             self.context = 1024
-        elif self.cfg["model_name"] == "pythia":
-            self.context = 2048
-
-
-        self.modelcfg = self.model.config.to_dict() # type: ignore
-
-        # Handle different model architectures
-        if 'n_layer' in self.modelcfg:
-            # GPT-2 style
             self.num_layers = self.modelcfg['n_layer']
             self.resid_dim = self.modelcfg['n_embd']
-        elif 'num_hidden_layers' in self.modelcfg:
+        elif self.cfg["model_name"] == "pythia":
+            self.context = 2048
             self.num_layers = self.modelcfg['num_hidden_layers']
             self.resid_dim = self.modelcfg['hidden_size']
-        else:
-            raise ValueError(f"Unsupported model architecture. Config keys: {list(self.modelcfg.keys())}")
+
         self.seed = self.cfg["seed"]
         torch.manual_seed(self.seed)
         self.ae_dim = cfg["ae_dim"]
         self.dtype = cfg["dtype"]
         self.save_dir = None
 
+        # [layers, model resid dim (embd), crosscoder blowup dim]
         self.W_enc = nn.Parameter(
-            torch.empty(
-                self.num_layers, self.resid_dim, self.ae_dim, dtype=self.dtype
+            torch.nn.init.normal_(
+                torch.empty(
+                    self.num_layers, self.resid_dim, self.ae_dim, dtype=self.dtype
+                )
             )
         )
 
+        # [crosscoder dim, layers, model resid dim (embd)]
         self.W_dec = nn.Parameter(
-            torch.empty(
-                self.ae_dim, self.num_layers, self.resid_dim, dtype=self.dtype
+            torch.nn.init.normal_(
+                torch.empty(
+                    self.ae_dim, self.num_layers, self.resid_dim, dtype=self.dtype
+                )
             )
         )
-
-        nn.init.kaiming_uniform_(self.W_enc, a=1)
-        nn.init.kaiming_uniform_(self.W_dec, a=1)
 
         dec_init_norm = 0.08
-        # self.W_dec.data = (
-        #     self.W_dec.data / self.W_dec.data.norm(dim=-1, keepdim=True) * dec_init_norm
-        # )
         self.W_dec.data = self.W_dec.data * (dec_init_norm / self.W_dec.data.norm())
 
 
         enc_init_norm = 0.08
-
-        # self.W_enc.data = (
-        #     self.W_enc.data / self.W_enc.data.norm(dim=-1, keepdim=True) * enc_init_norm
-        # )
         self.W_dec.data = self.W_dec.data * (enc_init_norm / self.W_dec.data.norm())
 
         self.b_enc = nn.Parameter(torch.zeros(self.ae_dim, dtype=self.dtype))
@@ -212,7 +200,6 @@ class Crosscoder(nn.Module):
 
 
 
-
 class Buffer:
     """
     Data buffer - stores acts across all layers that can be used to train autoencoder.
@@ -249,12 +236,92 @@ class Buffer:
         ).to(cfg["device"])
         self.pointer = 0
         self.first = True
+        self.normalize = True
 
-        self.layer_means = None
-        self.layer_stds = None
-        self.normalization_computed = False
+        estimated_norm_scaling_factors = self.estimate_norm_scaling_factor(cfg["model_batch_size"])
+
+        self.normalisation_factor = torch.tensor(
+            estimated_norm_scaling_factors,
+            device=cfg["device"],
+            dtype=torch.float32,
+        )
+
+        self.dataset = load_dataset('HuggingFaceFW/fineweb', split='train', streaming=True)
+        self.dataset_iter = iter(self.dataset)
 
         self.refresh()
+
+    @torch.no_grad()
+    def estimate_norm_scaling_factor(self, batch_size, n_batches_for_norm_estimate: int = 100):
+        norms_per_layer = [[] for _ in range(self.num_layers)]
+
+        all_tokens = self.get_tokens_for_norm_estimation(n_batches_for_norm_estimate, batch_size)
+
+        for i in tqdm.tqdm(
+            range(n_batches_for_norm_estimate), desc="Estimating norm scaling factor"
+        ):
+            tokens = all_tokens[i * batch_size : (i + 1) * batch_size]
+
+            all_acts = []
+
+            for j in range(0, len(tokens), self.cfg["model_batch_size"]):
+                batch_tokens = tokens[j:j + self.cfg["model_batch_size"]]
+
+                with self.model.trace(batch_tokens) as tracer:
+                    layer_outputs = []
+                    for layer_idx in range(self.num_layers):
+                        layer_out = get_layer_output(self.model, layer_idx, tracer)
+                        layer_outputs.append(layer_out)
+
+                batch_acts = torch.stack(layer_outputs, dim=2)
+
+                if self.cfg.get("drop_bos", True):
+                    batch_acts = batch_acts[:, 1:, :, :]
+
+                batch_acts = batch_acts.reshape(-1, self.num_layers, self.resid_dim)
+                all_acts.append(batch_acts)
+
+            acts = torch.cat(all_acts, dim=0)
+            layer_norms = acts.norm(dim=-1)
+            for layer_idx in range(self.num_layers):
+                norms_per_layer[layer_idx].append(layer_norms[:, layer_idx].mean().item())
+
+        scaling_factors = []
+        for layer_idx in range(self.num_layers):
+            mean_norm = np.mean(norms_per_layer[layer_idx])
+            scaling_factor = np.sqrt(self.resid_dim) / mean_norm
+            scaling_factors.append(scaling_factor)
+
+        return scaling_factors
+
+    @torch.no_grad()
+    def get_tokens_for_norm_estimation(self, n_batches, batch_size):
+        """Get all tokens needed for norm estimation at once"""
+        norm_dataset = load_dataset('HuggingFaceFW/fineweb', split='train', streaming=True)
+
+        tokens = []
+        count = 0
+        total_samples = n_batches * batch_size
+
+        for item in norm_dataset:
+            if count >= total_samples:
+                break
+
+            text = item['text']
+
+            if len(text.strip()) < 50:
+                continue
+
+            token_ids = self.model.tokenizer.encode(
+                text,
+                return_tensors="pt",
+                max_length=self.context,
+                truncation=True,
+                padding="max_length"
+            )
+            tokens.append(token_ids)
+            count += 1
+        return torch.cat(tokens, dim=0)
 
     @torch.no_grad()
     def refresh(self):
@@ -288,71 +355,66 @@ class Buffer:
         self.buffer = self.buffer[perm]
 
         self.pointer = 0
-        self.normalization_computed = False
 
     @torch.no_grad()
     def next(self):
         if self.pointer + self.cfg["batch_size"] > len(self.buffer):
             self.refresh()
 
-        # Get batch of activations
-        batch = self.buffer[self.pointer:self.pointer + self.cfg["batch_size"]]
+        batch = self.buffer[self.pointer:self.pointer + self.cfg["batch_size"]].float()
         self.pointer += self.cfg["batch_size"]
 
-        batch = batch.to(self.cfg["dtype"])
-
-        normalization_method = self.cfg.get("normalization", "layer_wise")  # Options: "layer_wise", "global", "none"
-
-        if normalization_method != "none":
-            if not self.normalization_computed or self.pointer % (self.cfg["batch_size"] * 100) == 0:
-                sample_size = min(self.cfg["batch_size"] * 10, len(self.buffer))
-                sample_indices = torch.randperm(len(self.buffer))[:sample_size]
-                sample_batch = self.buffer[sample_indices]
-
-                if normalization_method == "layer_wise":
-                    self.layer_means = sample_batch.mean(dim=[0, 2], keepdim=True)  # Average over batch and d_model
-                    self.layer_stds = sample_batch.std(dim=[0, 2], keepdim=True)
-                elif normalization_method == "global":
-                    global_mean = sample_batch.mean()
-                    global_std = sample_batch.std()
-                    self.layer_means = global_mean
-                    self.layer_stds = global_std
-
-                self.normalization_computed = True
-
-            if normalization_method == "layer_wise":
-                batch = (batch - self.layer_means) / (self.layer_stds + 1e-8)
-            elif normalization_method == "global":
-                batch = (batch - self.layer_means) / (self.layer_stds + 1e-8)
+        if self.normalize:
+            batch = batch * self.normalisation_factor[None, :, None]
 
         return batch.to(self.cfg["device"])
 
     def get_tokens_batch(self):
         """Get a batch of tokenized text data"""
-        dataset = load_dataset("wikitext", "wikitext-2-v1", split="train", streaming=True)
 
         tokens = []
         count = 0
         max_samples = self.buffer_batches
 
-        for item in dataset:
-            if count >= max_samples:
-                break
+        try:
+            for item in self.dataset_iter:
+                if count >= max_samples:
+                    break
 
-            text = item['text']
+                text = item['text']
 
-            if len(text.strip()) < 50:
-                continue
+                if len(text.strip()) < 50:
+                    continue
 
-            token_ids = self.model.tokenizer.encode(
-                text,
-                return_tensors="pt",
-                max_length=self.context,
-                truncation=True,
-                padding="max_length"
-            )
-            tokens.append(token_ids)
-            count += 1
+                token_ids = self.model.tokenizer.encode(
+                    text,
+                    return_tensors="pt",
+                    max_length=self.context,
+                    truncation=True,
+                    padding="max_length"
+                )
+                tokens.append(token_ids)
+                count += 1
+        except StopIteration:
+            self.dataset_iter = iter(self.dataset)
+            for item in self.dataset_iter:
+                if count >= max_samples:
+                    break
+
+                text = item['text']
+
+                if len(text.strip()) < 50:
+                    continue
+
+                token_ids = self.model.tokenizer.encode(
+                    text,
+                    return_tensors="pt",
+                    max_length=self.context,
+                    truncation=True,
+                    padding="max_length"
+                )
+                tokens.append(token_ids)
+                count += 1
         return torch.cat(tokens, dim=0)
 
 class Trainer:
@@ -487,7 +549,7 @@ class Trainer:
 
                 if i % (self.cfg["log_interval"] * 10) == 0 and i > 0:
                     try:
-                        analysis = self.analyze_feature_quality()
+                        analysis = self.analyze()
                         if self.use_wandb:
                             wandb.log({
                                 'feature_analysis/mean_sparsity': analysis['mean_sparsity'],
@@ -501,7 +563,7 @@ class Trainer:
         finally:
             self.save()
 
-    def analyze_feature_quality(self, n_samples=1000):
+    def analyze(self, n_samples=1000):
         """Analyze the quality of learned features during training"""
         sample_acts = self.buffer.next()[:n_samples]
         sample_acts = sample_acts.to(dtype=self.cfg["dtype"], device=self.cfg["device"])

@@ -24,17 +24,11 @@ def main():
         print("Initializing trainer...")
         trainer = Trainer(config, use_wandb=True)
 
-        print("Starting training with improved configuration...")
-        print(f"Expected training time: ~{config['total_steps'] * 0.1 / 3600:.1f} hours")
-
-        # Run initial feature analysis
-        print("Running initial feature analysis...")
         try:
             initial_analysis = trainer.analyze_feature_quality()
             print(f"Initial dead features: {initial_analysis['dead_features']}/{initial_analysis['total_features']}")
         except Exception as e:
             print(f"Initial analysis failed: {e}")
-
         trainer.train()
 
     except KeyboardInterrupt:
