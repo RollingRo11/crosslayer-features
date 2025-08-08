@@ -14,11 +14,14 @@ from torch.nn.utils import clip_grad_norm_
 from sophia import SophiaG
 import sys
 from pathlib import Path
+import os
 
 # Add sae_vis to path for model utilities
 sys.path.append(str(Path(__file__).parent.parent / "sae_vis" / "sae_vis"))
 from model_utils import get_layer_output
 
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+os.environ["TORCH_USE_CUDA_DSA"] = "1"
 
 cc_config = {
     "seed": 51,
@@ -26,7 +29,7 @@ cc_config = {
     "buffer_mult": 16,
     "lr": 3e-5,
     "num_tokens": int(4e8),
-    "l1_coefficient": 1.0,
+    "l1_coefficient": 2.0,
     "beta1": 0.9,
     "beta2": 0.999,
     "context": 128,
@@ -59,14 +62,13 @@ class LossOutput(NamedTuple):
     l0_loss: torch.Tensor
 
 class Crosscoder(nn.Module):
-    def __init__(self, cfg):
+    def __init__(self, cfg, model):
         super().__init__()
         self.cfg = cfg
+        self.model = model
         if self.cfg["model_name"] == "gpt2":
-            self.model = nnsight.LanguageModel("gpt2", device_map="auto")
             self.context = 1024
         elif self.cfg["model_name"] == "pythia":
-            self.model = nnsight.LanguageModel("EleutherAI/pythia-2.8b-deduped", device_map="auto")
             self.context = 2048
 
 
@@ -216,13 +218,12 @@ class Buffer:
     Data buffer - stores acts across all layers that can be used to train autoencoder.
     Will run model to generate more when it gets halfway empty.
     """
-    def __init__(self, cfg):
+    def __init__(self, cfg, model):
         self.cfg = cfg
+        self.model = model
         if self.cfg["model_name"] == "gpt2":
-            self.model = nnsight.LanguageModel("gpt2", device_map="auto")
             self.context = 1024
         elif self.cfg["model_name"] == "pythia":
-            self.model = nnsight.LanguageModel("EleutherAI/pythia-2.8b-deduped", device_map="auto")
             self.context = 2048
 
         self.modelcfg = self.model.config.to_dict() # type: ignore
@@ -243,7 +244,7 @@ class Buffer:
 
         self.buffer = torch.zeros(
             (self.buffer_size, self.num_layers, self.resid_dim),
-            dtype = torch.float32,
+            dtype = torch.bfloat16,
             requires_grad=False,
         ).to(cfg["device"])
         self.pointer = 0
@@ -257,7 +258,6 @@ class Buffer:
 
     @torch.no_grad()
     def refresh(self):
-
         tokens = self.get_tokens_batch()
 
         all_acts = []
@@ -288,7 +288,6 @@ class Buffer:
         self.buffer = self.buffer[perm]
 
         self.pointer = 0
-
         self.normalization_computed = False
 
     @torch.no_grad()
@@ -300,7 +299,7 @@ class Buffer:
         batch = self.buffer[self.pointer:self.pointer + self.cfg["batch_size"]]
         self.pointer += self.cfg["batch_size"]
 
-        batch = batch.float()
+        batch = batch.to(self.cfg["dtype"])
 
         normalization_method = self.cfg.get("normalization", "layer_wise")  # Options: "layer_wise", "global", "none"
 
@@ -352,19 +351,13 @@ class Buffer:
                 truncation=True,
                 padding="max_length"
             )
-
             tokens.append(token_ids)
             count += 1
-
         return torch.cat(tokens, dim=0)
-
-
 
 class Trainer:
     def __init__(self, cfg, use_wandb=True):
         self.cfg = cfg
-
-
         if self.cfg["model_name"] == "gpt2":
             self.model = nnsight.LanguageModel("gpt2", device_map="auto")
             self.context = 1024
@@ -372,14 +365,11 @@ class Trainer:
             self.model = nnsight.LanguageModel("EleutherAI/pythia-2.8b-deduped", device_map="auto")
             self.context = 2048
 
-        self.crosscoder = Crosscoder(cfg)
-        self.buffer = Buffer(cfg)
+        self.crosscoder = Crosscoder(cfg, model=self.model)
+        self.buffer = Buffer(cfg, model=self.model)
         self.total_steps = cfg["total_steps"]
         self.use_wandb = use_wandb
 
-        self.crosscoder = torch.compile(self.crosscoder, mode="default")
-
-        # Choose optimizer based on config
         if cfg.get("optimizer", "adamw") == "sophia":
             self.optimizer = SophiaG(self.crosscoder.parameters(), lr=2e-4, betas=(0.965, 0.99), rho=0.01, weight_decay=1e-1)
         else:
@@ -396,7 +386,6 @@ class Trainer:
 
 
         if use_wandb:
-            # Ensure wandb directory exists
             WANDB_DIR.mkdir(exist_ok=True)
             wandb.init(
                 project="crosscroders",
@@ -414,22 +403,51 @@ class Trainer:
             return 1.0 - (step - 0.8 * self.total_steps) / (0.2 * self.total_steps)
 
     def get_l1_coeff(self):
-       return self.cfg["l1_coefficient"]
+        if self.step_counter < 0.05 * self.total_steps:
+            return self.cfg["l1_coefficient"] * self.step_counter / (0.05 * self.total_steps)
+        else:
+            return self.cfg["l1_coefficient"]
+
 
     def step(self):
         acts = self.buffer.next()
         acts = acts.to(dtype=self.cfg["dtype"], device=self.cfg["device"])
 
-        losses = self.crosscoder.return_loss(acts)
-        loss = losses.l2_loss + self.get_l1_coeff() * losses.l1_loss
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            losses = self.crosscoder.return_loss(acts)
+            loss = losses.l2_loss + self.get_l1_coeff() * losses.l1_loss
+
         loss.backward()
 
-        grad_norm = clip_grad_norm_(self.crosscoder.parameters(), max_norm=5.0)
+        # Memory-safe gradient clipping alternative
+        grad_norm = 0.0
+        max_norm = 1.0
+        try:
+            total_norm = 0.0
+            param_count = 0
+            for param in self.crosscoder.parameters():
+                if param.grad is not None:
+                    param_norm = param.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+                    param_count += 1
+
+            if param_count > 0:
+                total_norm = total_norm ** (1. / 2)
+                grad_norm = total_norm
+
+                if total_norm > max_norm:
+                    clip_coef = max_norm / (total_norm + 1e-6)
+                    for param in self.crosscoder.parameters():
+                        if param.grad is not None:
+                            param.grad.data.mul_(clip_coef)
+        except Exception as e:
+            print(f"Gradient clipping failed: {e}, continuing without clipping")
+            grad_norm = 0.0
+
         self.optimizer.step()
         self.scheduler.step()
         self.optimizer.zero_grad()
 
-        # Calculate sparsity after gradient updates
         with torch.no_grad():
             encoded_acts = self.crosscoder.encode(acts)
 
@@ -440,7 +458,7 @@ class Trainer:
             "l0_loss": losses.l0_loss.item(),
             "l1_coeff": self.get_l1_coeff(),
             "lr": self.scheduler.get_last_lr()[0],
-            "grad_norm": grad_norm.item(),
+            "grad_norm": grad_norm,
             "sparsity": (encoded_acts > 0).float().mean().item(),
             "reconstruction_mse": losses.l2_loss.item() / acts.numel()
         }
