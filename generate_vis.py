@@ -87,8 +87,28 @@ def load_latest_checkpoint(device=None):
     # Use detected/specified device
     cfg["device"] = device
 
-    # Create crosscoder
-    crosscoder = Crosscoder(cfg)
+    # Load the model first - needed for Crosscoder initialization
+    model_name = cfg.get("model_name", "gpt2")
+    print(f"Loading model for crosscoder: {model_name}")
+    model_name_mapping = {
+        "gpt2": "gpt2",
+        "pythia": "EleutherAI/pythia-2.8b-deduped",
+        "pythia7b": "EleutherAI/pythia-6.9b-deduped",
+        "pythia160m": "EleutherAI/pythia-160m-deduped",
+        "pythia410m": "EleutherAI/pythia-410m-deduped",
+        "pythia1b": "EleutherAI/pythia-1b-deduped",
+        "pythia1.4b": "EleutherAI/pythia-1.4b-deduped",
+        "pythia2.8b": "EleutherAI/pythia-2.8b-deduped",
+    }
+
+    actual_model_name = model_name_mapping.get(model_name, model_name)
+    if device == "cuda":
+        model = nnsight.LanguageModel(actual_model_name, device_map="cuda")
+    else:
+        model = nnsight.LanguageModel(actual_model_name, device_map="cpu")
+
+    # Create crosscoder with both config and model
+    crosscoder = Crosscoder(cfg, model)
 
     # Load weights to the correct device
     crosscoder.W_enc.data = checkpoint['W_enc'].to(device)
@@ -97,7 +117,7 @@ def load_latest_checkpoint(device=None):
     crosscoder.b_dec.data = checkpoint['b_dec'].to(device)
 
     crosscoder.eval()
-    return crosscoder, cfg
+    return crosscoder, cfg, model
 
 
 def parse_args():
@@ -144,31 +164,8 @@ def main():
     print(f"Auto-detected device: {device}")
 
     # Load crosscoder with consistent device
-    crosscoder, crosscoder_cfg = load_latest_checkpoint(device=device)
+    crosscoder, crosscoder_cfg, model = load_latest_checkpoint(device=device)
     print(f"Loaded crosscoder with {crosscoder.ae_dim} features")
-
-    # Load model - use the same model that crosscoder was trained on
-    model_name = crosscoder_cfg.get("model_name", "gpt2")
-    print(f"Loading model: {model_name}")
-
-    # Map model names to actual model identifiers
-    model_name_mapping = {
-        "gpt2": "gpt2",
-        "pythia": "EleutherAI/pythia-2.8b-deduped",
-        "pythia7b": "EleutherAI/pythia-6.9b-deduped",
-        "pythia160m": "EleutherAI/pythia-160m-deduped",
-        "pythia410m": "EleutherAI/pythia-410m-deduped",
-        "pythia1b": "EleutherAI/pythia-1b-deduped",
-        "pythia1.4b": "EleutherAI/pythia-1.4b-deduped",
-        "pythia2.8b": "EleutherAI/pythia-2.8b-deduped",
-    }
-
-    actual_model_name = model_name_mapping.get(model_name, model_name)
-    # Use consistent device mapping
-    if device == "cuda":
-        model = nnsight.LanguageModel(actual_model_name, device_map="cuda")
-    else:
-        model = nnsight.LanguageModel(actual_model_name, device_map="cpu")
 
     # Verify model dimensions match crosscoder expectations
     from sae_vis.model_utils import get_hidden_size

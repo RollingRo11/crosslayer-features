@@ -481,7 +481,7 @@ class Trainer:
 
         loss.backward()
 
-        # Memory-safe gradient clipping alternative
+        # manually clip bcs torch grad_clip_norm_ cooked gpu vram (this is probably user error)
         grad_norm = 0.0
         max_norm = 1.0
         try:
