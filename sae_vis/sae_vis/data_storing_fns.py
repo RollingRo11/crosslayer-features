@@ -1042,25 +1042,23 @@ class CrosscoderVisData:
             FEATURE_DENSITIES[str(feat)] = density
             DATA[str(feat)] = {}
 
-            # Map component names properly
-            for comp_name in layout.components:
-                # Map from config names to data keys
-                data_key = comp_name
-                if comp_name == "crossLayerDecoderNorms":
-                    data_key = "decoderNorms"
-                elif comp_name == "crossLayerActivationHeatmap":
-                    data_key = "activationHeatmap"
-                elif comp_name == "crossLayerAggregatedActivation":
-                    data_key = "aggregatedActivation"
-                elif comp_name == "crossLayerDLA":
-                    data_key = "dla"
-                elif comp_name == "crossLayerFeatureCorrelation":
-                    data_key = "featureCorrelation"
-
-                if data_key in components_dict:
-                    DATA[str(feat)][comp_name] = components_dict[data_key].data(
-                        layout=layout, decode_fn=self.decode_fn
-                    )
+            # Process each component in the layout
+            for comp_name, comp_config in layout.components.items():
+                # Check if this component exists in the data
+                if comp_name in components_dict:
+                    try:
+                        component_data = components_dict[comp_name].data(
+                            layout=layout, decode_fn=self.decode_fn
+                        )
+                        DATA[str(feat)][comp_name] = component_data
+                        if verbose and feat == feature and comp_name == "crossLayerTrajectory":
+                            print(f"Added crossLayerTrajectory data for feature {feat}: {component_data is not None}")
+                    except Exception as e:
+                        if verbose:
+                            print(f"Error processing component '{comp_name}' for feature {feat}: {e}")
+                else:
+                    if verbose and feat == feature:  # Only print for the first feature
+                        print(f"Component '{comp_name}' not found in data for feature {feat}")
 
         html = self._create_html_file(layout, str(feature), DATA, feature_densities=FEATURE_DENSITIES)
         with open(filename, "w") as f:
@@ -1143,37 +1141,49 @@ class CrosscoderVisData:
         prompt_data: dict[str, Any] = {},
         feature_densities: dict[str, float] = {},
     ):
-        init_js_str = (Path(__file__).parent / "init.js").read_text()
-        style_css_str = (Path(__file__).parent / "style.css").read_text()
+        # Use simple JS and CSS for clean layout
+        init_js_str = (Path(__file__).parent / "init_simple.js").read_text()
+        style_css_str = (Path(__file__).parent / "style_simple.css").read_text()
 
         return f"""
-<div id='dropdown-container'></div>
-<div class='grid-container'></div>
-
-<script src="https://d3js.org/d3.v6.min.js"></script>
-<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-
-<style>
-{style_css_str}
-</style>
-
-<script>
-const START_KEY = {json.dumps(start_key)};
-const METADATA = {json.dumps(layout.metadata)};
-const DATA = defineData();
-const PROMPT_DATA = definePromptData();
-const FEATURE_DENSITIES = {json.dumps(feature_densities)};
-
-{init_js_str}
-
-function defineData() {{
-    return {json.dumps(data)};
-}}
-
-function definePromptData() {{
-    return {json.dumps(prompt_data)};
-}}
-</script>
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Crosscoder Feature Visualization</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://d3js.org/d3.v6.min.js"></script>
+    <style>
+    {style_css_str}
+    </style>
+</head>
+<body>
+    <div id="vis-container">
+        <div class="header">
+            <h2>Crosscoder Feature Visualization</h2>
+        </div>
+        
+        <div id="feature-info-container">
+            <div id="feature-info"></div>
+            <div class="graphs-column">
+                <div id="histogram-container"></div>
+                <div id="cross-layer-trajectory"></div>
+            </div>
+        </div>
+        
+        <div id="top-activations"></div>
+    </div>
+    
+    <script>
+    const START_KEY = {json.dumps(start_key)};
+    const DATA = {json.dumps(data)};
+    const PROMPT_DATA = {json.dumps(prompt_data)};
+    const FEATURE_DENSITIES = {json.dumps(feature_densities)};
+    
+    {init_js_str}
+    </script>
+</body>
+</html>
 """
 
 

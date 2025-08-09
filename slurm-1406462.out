@@ -1,101 +1,0 @@
---- CROSSCODER TRAINING ---
-Device: cuda
-Batch size: 2048
-AE dimension: 32768
-Total steps: 100,000
-L1 coefficient: 2.5
-Buffer Multiplier: 16
-enc/dec init norm: 0.05
-
-Initializing trainer...
-Downloading data:   0%|          | 0/150 [00:00<?, ?files/s]Downloading data:   1%|          | 1/150 [00:12<30:16, 12.19s/files]Downloading data:   1%|▏         | 2/150 [00:25<31:48, 12.90s/files]Downloading data:   2%|▏         | 3/150 [00:43<36:49, 15.03s/files]Downloading data:   3%|▎         | 4/150 [00:56<34:38, 14.24s/files]Downloading data:   3%|▎         | 5/150 [01:10<34:09, 14.13s/files]Downloading data:   4%|▍         | 6/150 [01:23<33:22, 13.91s/files]Downloading data:   5%|▍         | 7/150 [01:35<31:32, 13.24s/files]Downloading data:   5%|▌         | 8/150 [01:46<29:55, 12.65s/files]Downloading data:   6%|▌         | 9/150 [01:58<29:10, 12.42s/files]Downloading data:   7%|▋         | 10/150 [02:10<28:35, 12.25s/files]Downloading data:   7%|▋         | 11/150 [02:25<30:17, 13.07s/files]Downloading data:   8%|▊         | 12/150 [02:38<29:39, 12.89s/files]Downloading data:   9%|▊         | 13/150 [02:51<29:53, 13.09s/files]Downloading data:   9%|▉         | 14/150 [03:03<28:34, 12.61s/files]Downloading data:  10%|█         | 15/150 [03:15<28:26, 12.64s/files]Downloading data:  11%|█         | 16/150 [03:27<27:29, 12.31s/files]Downloading data:  11%|█▏        | 17/150 [03:38<26:30, 11.96s/files]Downloading data:  12%|█▏        | 18/150 [03:50<26:40, 12.13s/files]Downloading data:  13%|█▎        | 19/150 [04:02<25:54, 11.87s/files]Downloading data:  13%|█▎        | 20/150 [04:13<25:18, 11.68s/files]Downloading data:  14%|█▍        | 21/150 [04:53<43:24, 20.19s/files]Downloading data:  14%|█▍        | 21/150 [05:05<31:14, 14.53s/files]
-Traceback (most recent call last):
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/utils/file_utils.py", line 672, in temp_file_manager
-    yield f
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/utils/file_utils.py", line 689, in get_from_cache
-    fsspec_get(
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/utils/file_utils.py", line 395, in fsspec_get
-    fs.get_file(path, temp_file.name, callback=callback)
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/huggingface_hub/hf_file_system.py", line 910, in get_file
-    outfile.close()
-OSError: [Errno 122] Disk quota exceeded
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/projects/RohanKathuria/crosslayer-features/crosscoder/simple_train.py", line 24, in main
-    trainer = Trainer(config, use_wandb=True)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/projects/RohanKathuria/crosslayer-features/crosscoder/crosscoder.py", line 435, in __init__
-    self.buffer = Buffer(cfg, model=self.model)
-                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/projects/RohanKathuria/crosslayer-features/crosscoder/crosscoder.py", line 244, in __init__
-    self.dataset = load_dataset('HuggingFaceFW/fineweb', name='sample-100BT', split='train', streaming=False)
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/load.py", line 2628, in load_dataset
-    builder_instance.download_and_prepare(
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/builder.py", line 1029, in download_and_prepare
-    self._download_and_prepare(
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/builder.py", line 1102, in _download_and_prepare
-    split_generators = self._split_generators(dl_manager, **split_generators_kwargs)
-                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/packaged_modules/parquet/parquet.py", line 47, in _split_generators
-    data_files = dl_manager.download_and_extract(self.config.data_files)
-                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/download/download_manager.py", line 434, in download_and_extract
-    return self.extract(self.download(url_or_urls))
-                        ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/download/download_manager.py", line 257, in download
-    downloaded_path_or_paths = map_nested(
-                               ^^^^^^^^^^^
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/utils/py_utils.py", line 495, in map_nested
-    map_nested(
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/utils/py_utils.py", line 512, in map_nested
-    _single_map_nested((function, obj, batched, batch_size, types, None, True, None))
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/utils/py_utils.py", line 380, in _single_map_nested
-    return [mapped_item for batch in iter_batched(data_struct, batch_size) for mapped_item in function(batch)]
-                                                                                              ^^^^^^^^^^^^^^^
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/download/download_manager.py", line 300, in _download_batched
-    return thread_map(
-           ^^^^^^^^^^^
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/tqdm/contrib/concurrent.py", line 69, in thread_map
-    return _executor_map(ThreadPoolExecutor, fn, *iterables, **tqdm_kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/tqdm/contrib/concurrent.py", line 51, in _executor_map
-    return list(tqdm_class(ex.map(fn, *iterables, chunksize=chunksize), **kwargs))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/tqdm/std.py", line 1181, in __iter__
-    for obj in iterable:
-               ^^^^^^^^
-  File "/home/kathuria.r/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/concurrent/futures/_base.py", line 619, in result_iterator
-    yield _result_or_cancel(fs.pop())
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/kathuria.r/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/concurrent/futures/_base.py", line 317, in _result_or_cancel
-    return fut.result(timeout)
-           ^^^^^^^^^^^^^^^^^^^
-  File "/home/kathuria.r/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/concurrent/futures/_base.py", line 456, in result
-    return self.__get_result()
-           ^^^^^^^^^^^^^^^^^^^
-  File "/home/kathuria.r/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
-    raise self._exception
-  File "/home/kathuria.r/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/concurrent/futures/thread.py", line 59, in run
-    result = self.fn(*self.args, **self.kwargs)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/download/download_manager.py", line 323, in _download_single
-    out = cached_path(url_or_filename, download_config=download_config)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/utils/file_utils.py", line 211, in cached_path
-    output_path = get_from_cache(
-                  ^^^^^^^^^^^^^^^
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/utils/file_utils.py", line 682, in get_from_cache
-    with temp_file_manager() as temp_file:
-         ^^^^^^^^^^^^^^^^^^^
-  File "/home/kathuria.r/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 158, in __exit__
-    self.gen.throw(value)
-  File "/projects/RohanKathuria/crosslayer-features/.venv/lib/python3.12/site-packages/datasets/utils/file_utils.py", line 671, in temp_file_manager
-    with open(incomplete_path, mode) as f:
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-OSError: [Errno 122] Disk quota exceeded
-Training failed: [Errno 122] Disk quota exceeded
-Could not save checkpoint
-Training completed!

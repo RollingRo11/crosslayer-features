@@ -1,0 +1,359 @@
+/* Simple, clean styling for crosscoder visualization */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: #f5f5f5;
+    color: #333;
+    line-height: 1.6;
+}
+
+#vis-container {
+    max-width: 1600px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* Header with feature selector */
+.header {
+    background: white;
+    padding: 20px;
+    margin-bottom: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.feature-selector-container {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.selector-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+#feature-selector {
+    padding: 8px 12px;
+    font-size: 14px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: white;
+    cursor: pointer;
+    min-width: 200px;
+}
+
+#feature-selector:hover {
+    border-color: #999;
+}
+
+.sort-buttons {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+}
+
+.sort-btn, .filter-btn {
+    padding: 6px 10px;
+    font-size: 13px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: white;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.sort-btn {
+    font-weight: bold;
+    width: 32px;
+}
+
+.filter-btn {
+    font-size: 12px;
+}
+
+.sort-btn:hover, .filter-btn:hover {
+    border-color: #999;
+    background: #f8f8f8;
+}
+
+.sort-btn.active, .filter-btn.active {
+    background: #6495ED;
+    color: white;
+    border-color: #4A7FC7;
+}
+
+.sort-btn.active:hover, .filter-btn.active:hover {
+    background: #5385DD;
+}
+
+/* Feature info container - combines info and histogram */
+#feature-info-container {
+    background: white;
+    padding: 20px;
+    margin-bottom: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    display: flex;
+    gap: 30px;
+    align-items: flex-start;
+}
+
+/* Feature info section */
+#feature-info {
+    width: 320px;
+    flex-shrink: 0;
+}
+
+/* Graphs column */
+.graphs-column {
+    flex: 1;
+    min-width: 600px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.feature-header h1 {
+    font-size: 36px;
+    font-weight: 400;
+    color: #333;
+    margin-bottom: 15px;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 15px;
+}
+
+.stat-item {
+    padding: 6px 0;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.stat-label {
+    font-size: 9px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    margin-bottom: 2px;
+}
+
+.stat-value {
+    font-size: 14px;
+    font-weight: 500;
+    color: #333;
+}
+
+.percentiles {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #f0f0f0;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+    font-size: 11px;
+    color: #777;
+}
+
+/* Histogram */
+#histogram-container {
+    background: white;
+    padding: 15px;
+    border-radius: 6px;
+    border: 1px solid #eee;
+}
+
+#histogram-container svg,
+#histogram-plot {
+    width: 100%;
+}
+
+#histogram-container h3 {
+    font-size: 11px;
+    font-weight: 600;
+    margin-bottom: 10px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.bar {
+    transition: opacity 0.2s;
+}
+
+.bar:hover {
+    opacity: 0.8;
+}
+
+/* Top activations */
+#top-activations {
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+#top-activations h3 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 20px;
+    color: #333;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.activation-sequence {
+    margin-bottom: 4px;
+    padding: 2px 0;
+    transition: all 0.2s;
+}
+
+.activation-sequence:hover {
+    background: rgba(0, 0, 0, 0.02);
+}
+
+.sequence-content {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto;
+    align-items: center;
+    gap: 0;
+}
+
+.tokens {
+    display: flex;
+    font-family: 'Monaco', 'Courier New', monospace;
+    font-size: 11px;
+    line-height: 1.6;
+}
+
+.tokens-before {
+    justify-content: flex-end;
+    text-align: right;
+}
+
+.tokens-center {
+    padding: 0 2px;
+}
+
+.tokens-after {
+    justify-content: flex-start;
+    text-align: left;
+}
+
+.token {
+    padding: 1px 2px;
+    margin: 0;
+    display: inline;
+    transition: all 0.2s;
+}
+
+.token.max-activation {
+    background-color: rgba(255, 165, 0, 0.8) !important;
+    color: black;
+    font-weight: 600;
+    padding: 2px 3px;
+    border-radius: 2px;
+}
+
+.token.ellipsis {
+    color: #999;
+    padding: 0 4px;
+    font-style: italic;
+}
+
+@keyframes pulse {
+    0% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.05);
+    }
+    100% {
+        transform: scale(1);
+    }
+}
+
+.activation-value {
+    font-size: 11px;
+    font-weight: 400;
+    color: #888;
+    min-width: 45px;
+    text-align: right;
+    padding-left: 15px;
+}
+
+/* Cross-layer trajectory */
+#cross-layer-trajectory {
+    background: white;
+    padding: 15px;
+    border-radius: 6px;
+    border: 1px solid #eee;
+}
+
+#cross-layer-trajectory h3 {
+    font-size: 11px;
+    font-weight: 600;
+    margin-bottom: 10px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+#cross-layer-trajectory svg,
+#trajectory-plot {
+    width: 100%;
+}
+
+/* Loading state */
+.loading {
+    text-align: center;
+    padding: 40px;
+    color: #999;
+}
+
+/* Responsive design */
+@media (max-width: 1200px) {
+    #feature-info-container {
+        flex-direction: column;
+    }
+    
+    #feature-info {
+        width: 100%;
+    }
+    
+    .graphs-column {
+        width: 100%;
+    }
+}
+
+@media (max-width: 768px) {
+    .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    
+    .percentiles {
+        grid-template-columns: 1fr;
+    }
+    
+    .sequence-content {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .activation-value {
+        align-self: flex-end;
+    }
+}

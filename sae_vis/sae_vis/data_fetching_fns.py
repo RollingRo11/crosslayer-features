@@ -56,6 +56,7 @@ from .utils_fns import (
 
 Arr = np.ndarray
 
+# Use get_device() for automatic device selection
 device = get_device()
 
 

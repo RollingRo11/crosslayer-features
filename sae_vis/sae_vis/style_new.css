@@ -1,0 +1,344 @@
+/* Modern, clean styling for crosscoder visualization */
+
+/* Reset and base styles */
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background-color: #f6f8fa;
+    color: #24292f;
+    line-height: 1.5;
+}
+
+/* Main container */
+.grid-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+    background-color: white;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.24);
+}
+
+/* Feature header */
+.feature-header {
+    padding: 20px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-radius: 8px 8px 0 0;
+    margin: -20px -20px 20px -20px;
+}
+
+.header-content h2 {
+    font-size: 28px;
+    font-weight: 600;
+    margin-bottom: 15px;
+}
+
+.header-stats {
+    display: flex;
+    gap: 30px;
+    flex-wrap: wrap;
+}
+
+.stat-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.stat-label {
+    font-weight: 500;
+    opacity: 0.9;
+}
+
+.stat-value {
+    font-size: 18px;
+    font-weight: 700;
+}
+
+/* Main content layout */
+.main-content {
+    display: flex;
+    gap: 30px;
+    margin-top: 20px;
+}
+
+.left-column {
+    flex: 1;
+    min-width: 500px;
+}
+
+.right-column {
+    flex: 1.2;
+    min-width: 600px;
+}
+
+/* Histogram section */
+#histogram-section {
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    border: 1px solid #e1e4e8;
+    margin-bottom: 20px;
+}
+
+.histogram-container {
+    width: 100%;
+    height: 200px;
+}
+
+/* Layer norms section */
+#layer-norms-section {
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    border: 1px solid #e1e4e8;
+    margin-bottom: 20px;
+}
+
+.layer-norms-container {
+    width: 100%;
+    height: 150px;
+}
+
+/* Sequences section */
+#sequences-section {
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    border: 1px solid #e1e4e8;
+    max-height: 800px;
+    overflow-y: auto;
+}
+
+#sequences-section h3 {
+    font-size: 18px;
+    font-weight: 600;
+    color: #24292f;
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid #e1e4e8;
+}
+
+/* Sequence groups */
+.sequence-group {
+    margin-bottom: 30px;
+}
+
+.group-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #586069;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 15px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e1e4e8;
+}
+
+/* Individual sequences */
+.sequence-item {
+    margin-bottom: 20px;
+    padding: 15px;
+    background: #f6f8fa;
+    border-radius: 6px;
+    border: 1px solid #e1e4e8;
+    transition: all 0.2s ease;
+    cursor: pointer;
+    line-height: 2.2;
+}
+
+.sequence-item:hover {
+    background: #ffffff;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    transform: translateY(-1px);
+}
+
+/* Token styling */
+.token {
+    font-family: Georgia, 'Times New Roman', Times, serif;
+    font-size: 16px;
+    padding: 4px 6px;
+    margin: 1px;
+    border-radius: 0;
+    display: inline;
+    white-space: pre-wrap;
+    transition: background-color 0.2s ease;
+    position: relative;
+}
+
+/* Dropdown and navigation */
+#dropdown-container {
+    display: flex;
+    align-items: center;
+    padding: 20px;
+    background: white;
+    border-bottom: 1px solid #e1e4e8;
+    margin-bottom: 20px;
+    border-radius: 8px;
+}
+
+.feature-selector {
+    display: flex;
+    align-items: center;
+}
+
+.feature-selector label {
+    font-weight: 600;
+    color: #24292f;
+}
+
+.select {
+    position: relative;
+    display: inline-block;
+    min-width: 150px;
+}
+
+.select select {
+    appearance: none;
+    width: 100%;
+    padding: 8px 35px 8px 12px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background: white;
+    font-size: 14px;
+    font-weight: 500;
+    color: #24292f;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.select select:hover {
+    border-color: #8b949e;
+    background: #f6f8fa;
+}
+
+.select select:focus {
+    outline: none;
+    border-color: #0969da;
+    box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.1);
+}
+
+.select::after {
+    content: '\25BC';
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
+    color: #57606a;
+    font-size: 12px;
+}
+
+/* Navigation buttons */
+.nav-buttons {
+    display: flex;
+    gap: 10px;
+}
+
+.nav-buttons button {
+    padding: 8px 16px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background: white;
+    font-size: 14px;
+    font-weight: 500;
+    color: #24292f;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.nav-buttons button:hover {
+    background: #f6f8fa;
+    border-color: #8b949e;
+}
+
+.nav-buttons button:active {
+    transform: translateY(1px);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f3f5;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #8b949e;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #6e7681;
+}
+
+/* Responsive design */
+@media (max-width: 1200px) {
+    .main-content {
+        flex-direction: column;
+    }
+    
+    .left-column,
+    .right-column {
+        min-width: 100%;
+    }
+}
+
+/* Plotly overrides */
+.js-plotly-plot .plotly .modebar {
+    display: none !important;
+}
+
+.js-plotly-plot .plotly .main-svg {
+    background: transparent !important;
+}
+
+/* Stats section */
+#stats-section {
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    border: 1px solid #e1e4e8;
+    margin-bottom: 20px;
+}
+
+#stats-section h4 {
+    font-size: 14px;
+    font-weight: 600;
+    color: #586069;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+}
+
+/* Highlight colors for activations */
+.token-highlight-max {
+    background-color: rgba(255, 235, 59, 0.9) !important;
+    font-weight: 600;
+}
+
+.token-highlight-high {
+    background-color: rgba(255, 235, 59, 0.7) !important;
+}
+
+.token-highlight-medium {
+    background-color: rgba(255, 235, 59, 0.5) !important;
+}
+
+.token-highlight-low {
+    background-color: rgba(255, 235, 59, 0.3) !important;
+}
+
+.token-highlight-minimal {
+    background-color: rgba(255, 235, 59, 0.15) !important;
+}

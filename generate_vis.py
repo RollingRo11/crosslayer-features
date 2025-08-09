@@ -83,6 +83,12 @@ def load_latest_checkpoint(device=None):
             "dtype": torch.float32,
             "drop_bos": True,
         }
+    
+    # Add missing required fields with defaults
+    if 'dec_init_norm' not in cfg:
+        cfg['dec_init_norm'] = 0.05
+    if 'seed' not in cfg:
+        cfg['seed'] = 42
 
     # Use detected/specified device
     cfg["device"] = device
@@ -181,71 +187,112 @@ def main():
 
     print(f"Model dimension verification passed: {model_hidden_size}")
 
-    # Load some data - using Alpaca dataset for more diverse content
-    print("Loading data...")
-    dataset = load_dataset("tatsu-lab/alpaca", split="train", streaming=True)
-
-    # Tokenize sequences - use longer sequences for proper windowing
+    # Load diverse data from multiple sources for better variety
+    print("Loading diverse text data...")
+    
+    # Use OpenWebText and Wikipedia for truly diverse content
+    all_texts = []
+    target_sequences = 100  # More sequences for diversity
+    seq_len = 128  # Shorter sequences but with sliding windows for variety
+    
+    # Try to load from multiple sources for diversity
+    try:
+        # Load from OpenWebText
+        dataset = load_dataset("Skylion007/openwebtext", split="train", streaming=True)
+        
+        # Collect diverse texts
+        for i, example in enumerate(dataset):
+            if len(all_texts) >= target_sequences // 2:
+                break
+            
+            text = example.get('text', '')
+            # Clean and normalize text
+            text = ' '.join(text.split())
+            
+            # Only use texts with reasonable length for sliding windows
+            if 200 < len(text.split()) < 5000:
+                all_texts.append(text)
+        
+        # Also add some Wikipedia for even more diversity
+        wiki_dataset = load_dataset("wikipedia", "20220301.en", split="train", streaming=True)
+        for i, example in enumerate(wiki_dataset):
+            if len(all_texts) >= target_sequences:
+                break
+            
+            text = example.get('text', '')
+            # Clean and normalize
+            text = ' '.join(text.split())
+            
+            if 200 < len(text.split()) < 5000:
+                all_texts.append(text)
+                
+    except Exception as e:
+        print(f"Error loading diverse datasets: {e}")
+        print("Falling back to simpler dataset...")
+        # Fallback to a simpler dataset
+        dataset = load_dataset("wikitext", "wikitext-103-v1", split="train", streaming=True)
+        for i, example in enumerate(dataset):
+            if len(all_texts) >= target_sequences:
+                break
+            text = example.get('text', '')
+            if len(text) > 500:
+                all_texts.append(text)
+    
+    print(f"Collected {len(all_texts)} diverse text samples")
+    
+    # Use sliding windows to create more diverse sequences from each text
     tokens = []
-    max_sequences = 50  # More sequences for better sampling
-    seq_len = 512  # Much longer sequences to allow windowing
-
-    # Simplified collection - just take first N sequences that meet length requirement
-    all_examples = []
-
-    for i, example in enumerate(dataset):
-        if len(all_examples) >= max_sequences:
-            break
-
-        # Alpaca dataset has 'instruction', 'input', and 'output' fields
-        text_parts = []
-        if 'instruction' in example and example['instruction']:
-            text_parts.append(example['instruction'])
-        if 'input' in example and example['input']:
-            text_parts.append(example['input'])
-        if 'output' in example and example['output']:
-            text_parts.append(example['output'])
-
-        # Combine into single text
-        text = ' '.join(text_parts).strip()
-
-        # Remove newlines and extra whitespace
-        text = ' '.join(text.split())
-
-        # Skip short texts - we want substantial content for windowing
-        if len(text) < 800:  # Much longer minimum text length
-            continue
-
-        all_examples.append(text)
-
-    sampled_texts = all_examples
-
-    # Tokenization with endoftext filtering
-    for text in sampled_texts:
-        token_ids = model.tokenizer(text, return_tensors="pt", max_length=seq_len, truncation=True, padding="max_length")
-
-        # Remove endoftext tokens (50256 for GPT-2)
-        input_ids = token_ids['input_ids'].squeeze(0)  # Remove batch dimension
-        endoftext_token_id = 50256
-
-        # Filter out endoftext tokens and pad/truncate to desired length
-        filtered_ids = input_ids[input_ids != endoftext_token_id]
-
-        # If we have too few tokens after filtering, pad with a neutral token (e.g., space token)
-        if len(filtered_ids) < seq_len:
-            # Use space token (220) for padding instead of endoftext
-            space_token_id = 220  # Space token in GPT-2
-            padding_needed = seq_len - len(filtered_ids)
-            padding = torch.full((padding_needed,), space_token_id, dtype=filtered_ids.dtype)
-            filtered_ids = torch.cat([filtered_ids, padding])
+    window_stride = seq_len // 2  # 50% overlap for more diversity
+    
+    for text in all_texts[:target_sequences]:
+        # Tokenize the full text
+        token_ids = model.tokenizer(text, return_tensors="pt", truncation=False, add_special_tokens=False)
+        input_ids = token_ids['input_ids'].squeeze(0)
+        
+        # Skip if too short
+        if len(input_ids) < seq_len:
+            # Pad if needed
+            padding_needed = seq_len - len(input_ids)
+            padding = torch.full((padding_needed,), model.tokenizer.pad_token_id or 0, dtype=input_ids.dtype)
+            input_ids = torch.cat([input_ids, padding])
+            tokens.append(input_ids.unsqueeze(0))
         else:
-            # Truncate if too long
-            filtered_ids = filtered_ids[:seq_len]
-
-        tokens.append(filtered_ids.unsqueeze(0))  # Add batch dimension back
-
-    tokens = torch.cat(tokens, dim=0)
-    print(f"Tokenized {len(tokens)} sequences of length {seq_len}")
+            # Use sliding windows for longer texts
+            for start_idx in range(0, min(len(input_ids) - seq_len, seq_len * 3), window_stride):
+                window = input_ids[start_idx:start_idx + seq_len]
+                tokens.append(window.unsqueeze(0))
+                
+                # Limit windows per text to avoid too much from one source
+                if len(tokens) >= target_sequences * 2:
+                    break
+        
+        if len(tokens) >= target_sequences * 2:
+            break
+    
+    # Ensure we have enough sequences
+    if len(tokens) < 20:
+        print(f"Warning: Only got {len(tokens)} sequences, generating more...")
+        # Generate some synthetic diverse sequences as fallback
+        sample_texts = [
+            "The quantum mechanics of particle physics reveals fundamental properties of matter and energy.",
+            "Machine learning algorithms have revolutionized data analysis across industries.",
+            "Climate change affects global weather patterns and ecosystem stability.",
+            "The history of ancient civilizations provides insights into human development.",
+            "Neuroscience research explores the complex mechanisms of brain function.",
+            "Economic policies influence market dynamics and social welfare.",
+            "Artistic expression reflects cultural values and human creativity.",
+            "Technological innovation drives progress in medicine and healthcare.",
+            "Environmental conservation efforts protect biodiversity worldwide.",
+            "Space exploration expands our understanding of the universe.",
+        ]
+        
+        for text in sample_texts * 5:  # Repeat to get more sequences
+            token_ids = model.tokenizer(text, return_tensors="pt", max_length=seq_len, 
+                                       truncation=True, padding="max_length")
+            tokens.append(token_ids['input_ids'])
+    
+    tokens = torch.cat(tokens[:target_sequences], dim=0)
+    print(f"Created {len(tokens)} diverse sequences of length {seq_len} using sliding windows")
 
     # Generate feature list based on arguments
     if args.random:

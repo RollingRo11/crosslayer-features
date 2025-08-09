@@ -1,0 +1,286 @@
+/* Modern, clean styling matching target design */
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+    background-color: #ffffff;
+    color: #1a1a1a;
+    line-height: 1.5;
+    font-size: 14px;
+}
+
+/* Main container */
+.grid-container {
+    max-width: 1400px;
+    margin: 20px auto;
+    padding: 30px;
+    background-color: white;
+    border: 2px solid #333;
+    border-radius: 8px;
+}
+
+/* Grid layout */
+.grid-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 40px;
+}
+
+/* Left column */
+.left-column {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+/* Header Stats Section */
+.feature-header-stats {
+    background: white;
+    padding: 0;
+}
+
+.stats-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 20px;
+}
+
+.stats-header h2 {
+    font-size: 24px;
+    font-weight: 600;
+    color: #1a1a1a;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    margin-bottom: 15px;
+}
+
+.stat-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.stat-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.stat-value {
+    font-size: 18px;
+    font-weight: 600;
+    color: #1a1a1a;
+}
+
+.percentile-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 15px;
+    padding-top: 15px;
+    border-top: 1px solid #e0e0e0;
+    margin-top: 15px;
+}
+
+.percentile-item {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+}
+
+.percentile-label {
+    color: #666;
+}
+
+.percentile-value {
+    font-weight: 500;
+    color: #1a1a1a;
+}
+
+/* Histogram Section */
+.actsHistogram {
+    background: white;
+}
+
+.histogram-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #666;
+    margin-bottom: 10px;
+}
+
+.plotly-hist {
+    width: 100%;
+    height: 200px;
+}
+
+/* Cross-layer trajectory */
+.crossLayerTrajectory {
+    background: white;
+}
+
+.trajectory-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #666;
+    margin-bottom: 10px;
+}
+
+/* Sequences Section */
+.seqMultiGroup {
+    background: white;
+}
+
+.sequences-header {
+    font-size: 16px;
+    font-weight: 600;
+    color: #1a1a1a;
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.sequence-group {
+    margin-bottom: 5px;
+}
+
+.sequence-item {
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+    font-size: 13px;
+    line-height: 1.8;
+    transition: background-color 0.15s ease;
+}
+
+.sequence-item:hover {
+    background: #f8f8f8;
+}
+
+.sequence-meta {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 5px;
+    font-size: 11px;
+    color: #666;
+}
+
+.sequence-score {
+    font-weight: 600;
+    color: #1a1a1a;
+}
+
+/* Token styling */
+.token {
+    display: inline;
+    padding: 2px 0;
+    margin: 0;
+    border-radius: 0;
+    background: transparent;
+    transition: background-color 0.15s ease;
+}
+
+.token.max-activation {
+    background-color: rgba(255, 165, 0, 0.4);
+    font-weight: 600;
+    padding: 2px 3px;
+    border-radius: 2px;
+}
+
+.sequence-item:hover .token.has-activation {
+    background-color: rgba(255, 165, 0, 0.2);
+}
+
+.sequence-item:hover .token.max-activation {
+    background-color: rgba(255, 165, 0, 0.6);
+}
+
+/* Dropdown controls */
+#dropdown-container {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 15px 30px;
+    background: #f8f8f8;
+    border-bottom: 2px solid #333;
+    margin: -30px -30px 30px -30px;
+}
+
+.dropdown-label {
+    font-weight: 500;
+    color: #666;
+    font-size: 12px;
+}
+
+select {
+    padding: 6px 12px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: white;
+    font-size: 13px;
+    min-width: 150px;
+}
+
+button {
+    padding: 6px 16px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: white;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+button:hover {
+    background: #f0f0f0;
+    border-color: #999;
+}
+
+/* Hide feature tables if present */
+.featureTables {
+    display: none;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+/* Responsive adjustments */
+@media (max-width: 1200px) {
+    .grid-container {
+        grid-template-columns: 1fr;
+    }
+}
