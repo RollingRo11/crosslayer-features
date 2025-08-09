@@ -241,6 +241,9 @@ class Buffer:
         self.first = True
         self.normalize = True
 
+        self.dataset = load_dataset('HuggingFaceFW/fineweb', name='sample-100BT', split='train', streaming=False)
+        self.dataset_iter = iter(self.dataset)
+
         estimated_norm_scaling_factors = self.estimate_norm_scaling_factor(cfg["model_batch_size"])
 
         self.normalisation_factor = torch.tensor(
@@ -248,9 +251,6 @@ class Buffer:
             device=cfg["device"],
             dtype=torch.float32,
         )
-
-        self.dataset = load_dataset('HuggingFaceFW/fineweb', name='sample-100BT', split='train', streaming=False)
-        self.dataset_iter = iter(self.dataset)
 
         self.refresh()
 
