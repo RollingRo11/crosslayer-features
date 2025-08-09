@@ -487,6 +487,34 @@ def parse_feature_data(
                             windowed_acts = full_seq_acts
                             windowed_feat_idx = seq_idx
 
+                        # Filter out end-of-text tokens (ID 50256 for both GPT2 and Pythia)
+                        # Create mask for non-endoftext tokens
+                        endoftext_id = 50256
+                        token_mask = windowed_tokens != endoftext_id
+                        
+                        # If all tokens are endoftext, skip this sequence
+                        if not token_mask.any():
+                            continue
+                            
+                        # Filter tokens and activations
+                        filtered_tokens = windowed_tokens[token_mask]
+                        filtered_acts = windowed_acts[token_mask]
+                        
+                        # Adjust feat_acts_idx after filtering
+                        # Count how many tokens before the original index were filtered out
+                        tokens_removed_before_idx = (~token_mask[:windowed_feat_idx]).sum()
+                        filtered_feat_idx = windowed_feat_idx - tokens_removed_before_idx
+                        
+                        # Ensure feat_idx is valid after filtering
+                        if filtered_feat_idx < 0 or filtered_feat_idx >= len(filtered_tokens):
+                            # The peak activation token was filtered out, skip this sequence
+                            continue
+                        
+                        # Use filtered tokens and acts instead of windowed ones
+                        windowed_tokens = filtered_tokens
+                        windowed_acts = filtered_acts
+                        windowed_feat_idx = filtered_feat_idx
+
                         seq_len_actual = len(windowed_tokens)
 
                         # Proper loss contribution calculation via ablation
@@ -598,6 +626,34 @@ def parse_feature_data(
                                     windowed_tokens = full_seq_tokens
                                     windowed_acts = full_seq_acts
                                     windowed_feat_idx = seq_idx
+
+                                # Filter out end-of-text tokens (ID 50256 for both GPT2 and Pythia)
+                                # Create mask for non-endoftext tokens
+                                endoftext_id = 50256
+                                token_mask = windowed_tokens != endoftext_id
+                                
+                                # If all tokens are endoftext, skip this sequence
+                                if not token_mask.any():
+                                    continue
+                                    
+                                # Filter tokens and activations
+                                filtered_tokens = windowed_tokens[token_mask]
+                                filtered_acts = windowed_acts[token_mask]
+                                
+                                # Adjust feat_acts_idx after filtering
+                                # Count how many tokens before the original index were filtered out
+                                tokens_removed_before_idx = (~token_mask[:windowed_feat_idx]).sum()
+                                filtered_feat_idx = windowed_feat_idx - tokens_removed_before_idx
+                                
+                                # Ensure feat_idx is valid after filtering
+                                if filtered_feat_idx < 0 or filtered_feat_idx >= len(filtered_tokens):
+                                    # The peak activation token was filtered out, skip this sequence
+                                    continue
+                                
+                                # Use filtered tokens and acts instead of windowed ones
+                                windowed_tokens = filtered_tokens
+                                windowed_acts = filtered_acts
+                                windowed_feat_idx = filtered_feat_idx
 
                                 seq_len_actual = len(windowed_tokens)
 

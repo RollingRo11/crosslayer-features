@@ -288,14 +288,34 @@ class LogitsTableData:
     def from_data(
         cls, logits: Float[Tensor, "d_vocab"], k: int, max_logits: float | None = None
     ) -> "LogitsTableData":
-        # Get logits table data
-        top_logits = TopK(logits, k)
-        bottom_logits = TopK(logits, k, largest=False)
+        # Filter out endoftext token (ID 50256) before getting top-k
+        endoftext_id = 50256
+        
+        # Create a copy of logits and set endoftext token to very negative value
+        filtered_logits = logits.clone()
+        if endoftext_id < len(filtered_logits):
+            filtered_logits[endoftext_id] = -1e10  # Set to very negative value to exclude from top-k
+        
+        # Get logits table data with filtered logits
+        # We need more than k to account for potentially filtering out endoftext
+        top_k_size = min(k + 5, len(filtered_logits))  # Get a few extra in case we filter some
+        bottom_k_size = min(k + 5, len(filtered_logits))
+        
+        top_logits = TopK(filtered_logits, top_k_size)
+        bottom_logits = TopK(filtered_logits, bottom_k_size, largest=False)
+        
+        # Filter out endoftext from results
+        top_indices = [idx for idx in top_logits.indices.tolist() if idx != endoftext_id][:k]
+        top_values = [val for idx, val in zip(top_logits.indices.tolist(), top_logits.values.tolist()) if idx != endoftext_id][:k]
+        
+        bottom_indices = [idx for idx in bottom_logits.indices.tolist() if idx != endoftext_id][:k]
+        bottom_values = [val for idx, val in zip(bottom_logits.indices.tolist(), bottom_logits.values.tolist()) if idx != endoftext_id][:k]
+        
         return LogitsTableData(
-            bottom_logits=bottom_logits.values.tolist(),
-            bottom_token_ids=bottom_logits.indices.tolist(),
-            top_logits=top_logits.values.tolist(),
-            top_token_ids=top_logits.indices.tolist(),
+            bottom_logits=bottom_values,
+            bottom_token_ids=bottom_indices,
+            top_logits=top_values,
+            top_token_ids=top_indices,
             vocab_type="unembed",
             max_logits=max_logits,
         )
