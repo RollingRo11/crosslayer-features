@@ -11,9 +11,8 @@ def main():
     print(f"AE dimension: {config['ae_dim']}")
     print(f"Total steps: {config['total_steps']:,}")
     print(f"L1 coefficient: {config['l1_coefficient']}")
-    print(f"Total tokens: {config['num_tokens']:,}")
-    print(f"Save directory: {SAVE_DIR}")
-    print(f"Wandb directory: {WANDB_DIR}")
+    print(f"Buffer Multiplier: {config['buffer_mult']}")
+    print(f"enc/dec init norm: {config['dec_init_norm']}")
     print()
 
     # Ensure directories exist
@@ -25,7 +24,7 @@ def main():
         trainer = Trainer(config, use_wandb=True)
 
         try:
-            initial_analysis = trainer.analyze_feature_quality()
+            initial_analysis = trainer.analyze()
             print(f"Initial dead features: {initial_analysis['dead_features']}/{initial_analysis['total_features']}")
         except Exception as e:
             print(f"Initial analysis failed: {e}")

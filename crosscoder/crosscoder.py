@@ -29,7 +29,7 @@ cc_config = {
     "buffer_mult": 16,
     "lr": 3e-5,
     "num_tokens": int(4e8),
-    "l1_coefficient": 2.0,
+    "l1_coefficient": 1.2,
     "beta1": 0.9,
     "beta2": 0.999,
     "context": 128,
@@ -43,7 +43,8 @@ cc_config = {
     "drop_bos": True,
     "total_steps": 100000,
     "normalization": "layer_wise",
-    "optimizer": "adamw" # Options: "adamw", "sophia"
+    "optimizer": "adamw", # Options: "adamw", "sophia"
+    "dec_init_norm": 0.09,
 }
 
 # Use absolute path relative to this file's location
@@ -76,6 +77,8 @@ class Crosscoder(nn.Module):
             self.num_layers = self.modelcfg['num_hidden_layers']
             self.resid_dim = self.modelcfg['hidden_size']
 
+        self.init_norm = cfg['dec_init_norm']
+
         self.seed = self.cfg["seed"]
         torch.manual_seed(self.seed)
         self.ae_dim = cfg["ae_dim"]
@@ -100,12 +103,12 @@ class Crosscoder(nn.Module):
             )
         )
 
-        dec_init_norm = 0.08
+        dec_init_norm = self.init_norm
         self.W_dec.data = self.W_dec.data * (dec_init_norm / self.W_dec.data.norm())
 
 
-        enc_init_norm = 0.08
-        self.W_dec.data = self.W_dec.data * (enc_init_norm / self.W_dec.data.norm())
+        enc_init_norm = self.init_norm
+        self.W_enc.data = self.W_enc.data * (enc_init_norm / self.W_enc.data.norm())
 
         self.b_enc = nn.Parameter(torch.zeros(self.ae_dim, dtype=self.dtype))
         self.b_dec = nn.Parameter(
