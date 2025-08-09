@@ -23,6 +23,11 @@ from model_utils import get_layer_output
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["TORCH_USE_CUDA_DSA"] = "1"
 
+# Set up local dataset cache directory
+PROJECT_ROOT = Path(__file__).parent.parent
+DATASET_CACHE_DIR = PROJECT_ROOT / "data" / "hf_datasets_cache"
+DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
 cc_config = {
     "seed": 51,
     "batch_size": 2048,
@@ -241,7 +246,7 @@ class Buffer:
         self.first = True
         self.normalize = True
 
-        self.dataset = load_dataset('HuggingFaceFW/fineweb', name='sample-100BT', split='train', streaming=False)
+        self.dataset = load_dataset('HuggingFaceFW/fineweb', name='sample-100BT', split='train', streaming=False, cache_dir=str(DATASET_CACHE_DIR))
         self.dataset_iter = iter(self.dataset)
 
         estimated_norm_scaling_factors = self.estimate_norm_scaling_factor(cfg["model_batch_size"])
