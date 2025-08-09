@@ -29,7 +29,7 @@ cc_config = {
     "buffer_mult": 16,
     "lr": 3e-5,
     "num_tokens": int(4e8),
-    "l1_coefficient": 1.2,
+    "l1_coefficient": 2.5,
     "beta1": 0.9,
     "beta2": 0.999,
     "context": 128,
@@ -44,7 +44,7 @@ cc_config = {
     "total_steps": 100000,
     "normalization": "layer_wise",
     "optimizer": "adamw", # Options: "adamw", "sophia"
-    "dec_init_norm": 0.09,
+    "dec_init_norm": 0.05,
 }
 
 # Use absolute path relative to this file's location
@@ -468,8 +468,8 @@ class Trainer:
             return 1.0 - (step - 0.8 * self.total_steps) / (0.2 * self.total_steps)
 
     def get_l1_coeff(self):
-        if self.step_counter < 0.05 * self.total_steps:
-            return self.cfg["l1_coefficient"] * self.step_counter / (0.05 * self.total_steps)
+        if self.step_counter < 0.08 * self.total_steps:
+            return self.cfg["l1_coefficient"] * self.step_counter / (0.08 * self.total_steps)
         else:
             return self.cfg["l1_coefficient"]
 
