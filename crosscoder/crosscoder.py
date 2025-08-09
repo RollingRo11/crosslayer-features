@@ -249,7 +249,7 @@ class Buffer:
             dtype=torch.float32,
         )
 
-        self.dataset = load_dataset('HuggingFaceFW/fineweb', split='train', streaming=True)
+        self.dataset = load_dataset('HuggingFaceFW/fineweb', name='sample-100BT', split='train')
         self.dataset_iter = iter(self.dataset)
 
         self.refresh()
@@ -300,7 +300,8 @@ class Buffer:
     @torch.no_grad()
     def get_tokens_for_norm_estimation(self, n_batches, batch_size):
         """Get all tokens needed for norm estimation at once"""
-        norm_dataset = load_dataset('HuggingFaceFW/fineweb', split='train', streaming=True)
+        # Use the same non-streaming dataset that was already loaded
+        norm_dataset = self.dataset
 
         tokens = []
         count = 0
