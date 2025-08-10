@@ -128,13 +128,13 @@ def load_latest_checkpoint(device=None):
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Generate crosscoder visualization dashboard")
+    parser = argparse.ArgumentParser(description="Generate crosscoder visualization dashboard with large-scale data")
 
     parser.add_argument(
         "--num_features",
         type=int,
-        default=3,
-        help="Number of features to visualize (default: 3)"
+        default=10,
+        help="Number of features to visualize (default: 10)"
     )
 
     parser.add_argument(
@@ -146,24 +146,242 @@ def parse_args():
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=8,
-        help="Batch size for token processing (default: 8)"
+        default=16,
+        help="Batch size for token processing (default: 16)"
+    )
+    
+    parser.add_argument(
+        "--num_sequences",
+        type=int,
+        default=5000,
+        help="Number of sequences to process (default: 5000)"
+    )
+    
+    parser.add_argument(
+        "--seq_len",
+        type=int,
+        default=1024,
+        help="Length of each sequence (default: 1024, max: 1024 for GPT-2, 2048 for Pythia)"
+    )
+    
+    parser.add_argument(
+        "--top_acts_per_feature",
+        type=int,
+        default=100,
+        help="Number of top activating sequences to show per feature (default: 100)"
+    )
+    
+    parser.add_argument(
+        "--quantile_examples",
+        type=int,
+        default=20,
+        help="Number of examples per quantile group (default: 20)"
     )
 
     parser.add_argument(
         "--output",
         type=str,
-        default="crosscoder_dashboard_new.html",
-        help="Output filename for the dashboard (default: crosscoder_dashboard_new.html)"
+        default="crosscoder_dashboard.html",
+        help="Output filename for the dashboard (default: crosscoder_dashboard.html)"
+    )
+    
+    parser.add_argument(
+        "--use_cached_data",
+        action="store_true",
+        help="Use cached token data if available"
+    )
+    
+    parser.add_argument(
+        "--cache_file",
+        type=str,
+        default="cached_tokens.pt",
+        help="Cache file for token data (default: cached_tokens.pt)"
     )
 
     return parser.parse_args()
 
 
+def load_diverse_data(model, num_sequences=5000, seq_len=1024, cache_file=None, use_cache=False):
+    """Load a large, diverse dataset for better feature interpretation."""
+    
+    # Check for cached data
+    if use_cache and cache_file and Path(cache_file).exists():
+        print(f"Loading cached tokens from {cache_file}...")
+        tokens = torch.load(cache_file)
+        print(f"Loaded {len(tokens)} cached sequences")
+        return tokens
+    
+    print(f"Loading {num_sequences} diverse text sequences of length {seq_len}...")
+    
+    # Set up dataset cache directory
+    PROJECT_ROOT = Path(__file__).parent
+    DATASET_CACHE_DIR = PROJECT_ROOT / "data" / "hf_datasets_cache"
+    DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    
+    all_texts = []
+    tokens = []
+    
+    # Try multiple data sources for diversity
+    data_sources = [
+        ('monology/pile-uncopyrighted', 'train'),
+        ('wikitext', 'wikitext-103-raw-v1', 'train'),
+        ('openwebtext', 'plain_text', 'train'),
+    ]
+    
+    texts_per_source = num_sequences // len(data_sources) + 100  # Extra buffer
+    
+    for source_info in data_sources:
+        if len(all_texts) >= num_sequences:
+            break
+            
+        try:
+            if len(source_info) == 2:
+                dataset_name, split = source_info
+                config = None
+            else:
+                dataset_name, config, split = source_info
+                
+            print(f"Loading from {dataset_name}...")
+            
+            # Load dataset with streaming for memory efficiency
+            dataset = load_dataset(
+                dataset_name,
+                config,
+                split=split,
+                streaming=True,
+                cache_dir=str(DATASET_CACHE_DIR)
+            ) if config else load_dataset(
+                dataset_name,
+                split=split,
+                streaming=True,
+                cache_dir=str(DATASET_CACHE_DIR)
+            )
+            
+            collected = 0
+            for i, example in enumerate(dataset):
+                if collected >= texts_per_source:
+                    break
+                    
+                # Get text field (different datasets use different field names)
+                text = example.get('text', example.get('content', ''))
+                if not text:
+                    continue
+                    
+                # Clean and normalize
+                text = ' '.join(text.split())
+                
+                # Filter for reasonable length texts
+                word_count = len(text.split())
+                if 100 < word_count < 10000:
+                    all_texts.append(text)
+                    collected += 1
+                    
+                # Progress indicator
+                if collected % 100 == 0 and collected > 0:
+                    print(f"  Collected {collected} texts from {dataset_name}")
+                    
+        except Exception as e:
+            print(f"Could not load {dataset_name}: {e}")
+            continue
+    
+    print(f"Collected {len(all_texts)} diverse text samples")
+    
+    # If we don't have enough texts, use the Pile as primary source
+    if len(all_texts) < num_sequences // 2:
+        print("Loading more texts from The Pile...")
+        try:
+            dataset = load_dataset(
+                'monology/pile-uncopyrighted',
+                split='train',
+                streaming=True,
+                cache_dir=str(DATASET_CACHE_DIR)
+            )
+            
+            for i, example in enumerate(dataset):
+                if len(all_texts) >= num_sequences:
+                    break
+                    
+                text = example.get('text', '')
+                if not text:
+                    continue
+                    
+                # Clean and normalize
+                text = ' '.join(text.split())
+                
+                # Filter for reasonable length
+                if 200 < len(text.split()) < 5000:
+                    all_texts.append(text)
+                    
+                # Progress indicator
+                if len(all_texts) % 100 == 0:
+                    print(f"  Collected {len(all_texts)} texts...")
+                    
+        except Exception as e:
+            print(f"Could not load additional Pile data: {e}")
+    
+    # Convert texts to tokens with sliding windows
+    print(f"Tokenizing {num_sequences} sequences of length {seq_len}...")
+    
+    window_stride = seq_len // 2  # 50% overlap
+    
+    with tqdm(total=num_sequences, desc="Tokenizing") as pbar:
+        for text in all_texts:
+            if len(tokens) >= num_sequences:
+                break
+                
+            # Tokenize the full text
+            token_ids = model.tokenizer(
+                text, 
+                return_tensors="pt", 
+                truncation=False, 
+                add_special_tokens=False
+            )
+            input_ids = token_ids['input_ids'].squeeze(0)
+            
+            # Skip if too short
+            if len(input_ids) < seq_len:
+                # Pad if needed
+                padding_needed = seq_len - len(input_ids)
+                padding = torch.full((padding_needed,), model.tokenizer.pad_token_id or 0, dtype=input_ids.dtype)
+                input_ids = torch.cat([input_ids, padding])
+                tokens.append(input_ids.unsqueeze(0))
+                pbar.update(1)
+            else:
+                # Use sliding windows for longer texts
+                num_windows = min((len(input_ids) - seq_len) // window_stride + 1, 5)  # Max 5 windows per text
+                for i in range(num_windows):
+                    if len(tokens) >= num_sequences:
+                        break
+                    start_idx = i * window_stride
+                    window = input_ids[start_idx:start_idx + seq_len]
+                    tokens.append(window.unsqueeze(0))
+                    pbar.update(1)
+    
+    # Concatenate all tokens
+    tokens = torch.cat(tokens[:num_sequences], dim=0)
+    print(f"Created {len(tokens)} sequences of length {seq_len}")
+    
+    # Save cache if requested
+    if cache_file:
+        print(f"Saving token cache to {cache_file}...")
+        torch.save(tokens, cache_file)
+    
+    return tokens
+
+
 def main():
     args = parse_args()
-    print("Starting crosscoder visualization generation...")
-    print(f"Configuration: {args.num_features} features, {'random' if args.random else 'sequential'} selection, batch_size={args.batch_size}")
+    print("=" * 80)
+    print("CROSSCODER VISUALIZATION WITH LARGE-SCALE DATA")
+    print("=" * 80)
+    print(f"Configuration:")
+    print(f"  - Features: {args.num_features} ({'random' if args.random else 'sequential'})")
+    print(f"  - Sequences: {args.num_sequences} x {args.seq_len} tokens")
+    print(f"  - Top acts per feature: {args.top_acts_per_feature}")
+    print(f"  - Examples per quantile: {args.quantile_examples}")
+    print(f"  - Batch size: {args.batch_size}")
+    print(f"  - Output: {args.output}")
+    print("=" * 80)
 
     # Auto-detect device for consistent usage
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -187,131 +405,15 @@ def main():
 
     print(f"Model dimension verification passed: {model_hidden_size}")
 
-    # Load diverse data from The Pile dataset (streaming)
-    print("Loading diverse text data from The Pile...")
+    # Load large diverse dataset
+    tokens = load_diverse_data(
+        model, 
+        num_sequences=args.num_sequences,
+        seq_len=args.seq_len,
+        cache_file=args.cache_file if args.use_cached_data else None,
+        use_cache=args.use_cached_data
+    )
 
-    # Set up dataset cache directory (same as crosscoder)
-    from pathlib import Path
-    PROJECT_ROOT = Path(__file__).parent
-    DATASET_CACHE_DIR = PROJECT_ROOT / "data" / "hf_datasets_cache"
-    DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-    all_texts = []
-    target_sequences = 100  # More sequences for diversity
-    seq_len = 128  # Shorter sequences but with sliding windows for variety
-
-    # Stream The Pile dataset like in crosscoder training
-    try:
-        print("Streaming from The Pile dataset...")
-        dataset = load_dataset(
-            'monology/pile-uncopyrighted',
-            split='train',
-            streaming=True,
-            cache_dir=str(DATASET_CACHE_DIR)
-        )
-
-        # Collect diverse texts from The Pile
-        for i, example in enumerate(dataset):
-            if len(all_texts) >= target_sequences:
-                break
-
-            text = example.get('text', '')
-            if not text:
-                continue
-
-            # Clean and normalize text
-            text = ' '.join(text.split())
-
-            # Only use texts with reasonable length for sliding windows
-            if 200 < len(text.split()) < 5000:
-                all_texts.append(text)
-
-            # Progress indicator
-            if i % 1000 == 0 and i > 0:
-                print(f"  Processed {i} samples, collected {len(all_texts)} suitable texts...")
-
-    except Exception as e:
-        print(f"Error loading The Pile dataset: {e}")
-        print("Falling back to simple synthetic dataset...")
-        # Create synthetic diverse texts as fallback
-        synthetic_texts = [
-            "The quantum mechanics of particle physics reveals fundamental properties of matter and energy throughout the universe.",
-            "Machine learning algorithms have revolutionized data analysis across industries including healthcare, finance, and technology.",
-            "Climate change affects global weather patterns and ecosystem stability, requiring immediate international cooperation.",
-            "The history of ancient civilizations provides insights into human development, culture, and social organization.",
-            "Neuroscience research explores the complex mechanisms of brain function, cognition, and consciousness.",
-            "Economic policies influence market dynamics, social welfare, and international trade relationships.",
-            "Artistic expression reflects cultural values, human creativity, and the evolution of aesthetic principles.",
-            "Technological innovation drives progress in medicine, healthcare, and scientific research methodologies.",
-            "Environmental conservation efforts protect biodiversity worldwide while promoting sustainable development practices.",
-            "Space exploration expands our understanding of the universe, planetary science, and extraterrestrial life.",
-        ]
-
-        # Expand synthetic texts to have more variety
-        for base_text in synthetic_texts:
-            for variation in range(10):  # Create variations
-                text = f"{base_text} This represents example {variation + 1} of scientific and technical discourse."
-                all_texts.append(text)
-                if len(all_texts) >= target_sequences:
-                    break
-            if len(all_texts) >= target_sequences:
-                break
-
-    print(f"Collected {len(all_texts)} diverse text samples")
-
-    # Use sliding windows to create more diverse sequences from each text
-    tokens = []
-    window_stride = seq_len // 2  # 50% overlap for more diversity
-
-    for text in all_texts[:target_sequences]:
-        # Tokenize the full text
-        token_ids = model.tokenizer(text, return_tensors="pt", truncation=False, add_special_tokens=False)
-        input_ids = token_ids['input_ids'].squeeze(0)
-
-        # Skip if too short
-        if len(input_ids) < seq_len:
-            # Pad if needed
-            padding_needed = seq_len - len(input_ids)
-            padding = torch.full((padding_needed,), model.tokenizer.pad_token_id or 0, dtype=input_ids.dtype)
-            input_ids = torch.cat([input_ids, padding])
-            tokens.append(input_ids.unsqueeze(0))
-        else:
-            # Use sliding windows for longer texts
-            for start_idx in range(0, min(len(input_ids) - seq_len, seq_len * 3), window_stride):
-                window = input_ids[start_idx:start_idx + seq_len]
-                tokens.append(window.unsqueeze(0))
-
-                # Limit windows per text to avoid too much from one source
-                if len(tokens) >= target_sequences * 2:
-                    break
-
-        if len(tokens) >= target_sequences * 2:
-            break
-
-    # Ensure we have enough sequences
-    if len(tokens) < 20:
-        print(f"Warning: Only got {len(tokens)} sequences, generating more...")
-        # Generate some synthetic diverse sequences as fallback
-        sample_texts = [
-            "The quantum mechanics of particle physics reveals fundamental properties of matter and energy.",
-            "Machine learning algorithms have revolutionized data analysis across industries.",
-            "Climate change affects global weather patterns and ecosystem stability.",
-            "The history of ancient civilizations provides insights into human development.",
-            "Neuroscience research explores the complex mechanisms of brain function.",
-            "Economic policies influence market dynamics and social welfare.",
-            "Artistic expression reflects cultural values and human creativity.",
-            "Technological innovation drives progress in medicine and healthcare.",
-            "Environmental conservation efforts protect biodiversity worldwide.",
-            "Space exploration expands our understanding of the universe.",
-        ]
-
-        for text in sample_texts * 5:  # Repeat to get more sequences
-            token_ids = model.tokenizer(text, return_tensors="pt", max_length=seq_len,
-                                       truncation=True, padding="max_length")
-            tokens.append(token_ids['input_ids'])
-
-    tokens = torch.cat(tokens[:target_sequences], dim=0)
-    print(f"Created {len(tokens)} diverse sequences of length {seq_len} using sliding windows")
 
     # Generate feature list based on arguments
     if args.random:
@@ -325,39 +427,39 @@ def main():
         selected_features = list(range(min(args.num_features, crosscoder.ae_dim)))
         print(f"Sequential features: {selected_features}")
 
-    # Create config with user-specified parameters
+    # Create config with enhanced parameters for large-scale analysis
     config = CrosscoderVisConfig(
         features=selected_features,
-        minibatch_size_features=16,
+        minibatch_size_features=32,  # Larger feature batch for efficiency
         minibatch_size_tokens=args.batch_size,
         verbose=True,  # Enable progress reporting
     )
 
-    # Use the default layout which includes ActsHistogramConfig, and just modify the sequence config
+    # Configure sequence display for large-scale analysis
     from sae_vis.data_config_classes import SeqMultiGroupConfig, CrossLayerTrajectoryConfig
 
-    # Configure sequence display to match reference implementation approach
-    # Reduce verbose output and focus on high-quality examples
+    # Much more data for better interpretation
     config.feature_centric_layout.seq_cfg = SeqMultiGroupConfig(
-        top_acts_group_size=15,  # Fewer, higher quality top activation examples
-        n_quantiles=5,  # Show 5 quantile intervals for better distribution
-        quantile_group_size=6,  # Fewer examples per quantile to reduce clutter
-        buffer=(8, 8),  # Smaller buffer for more focused context
+        top_acts_group_size=args.top_acts_per_feature,  # Many more top examples
+        n_quantiles=10,  # Keep 10 quantile groups for good distribution view
+        quantile_group_size=args.quantile_examples,  # More examples per quantile
+        buffer=(32, 32),  # Larger context window for 1024 token sequences
         compute_buffer=True,  # Enable proper buffer computation
-        top_logits_hoverdata=5,  # Show top 5 logits in hover
+        top_logits_hoverdata=10,  # Show top 10 logits in hover
     )
 
     # Add cross-layer trajectory visualization
     config.feature_centric_layout.cross_layer_trajectory_cfg = CrossLayerTrajectoryConfig(
         n_sequences=1,  # Not used for decoder norms (always single trajectory)
         height=400,
-        normalize=True,  # Normalize decoder norms to [0, 1] like in the reference image
+        normalize=True,  # Normalize decoder norms to [0, 1]
         show_mean=True,
     )
 
-    # Get feature data
-    print(f"🔄 Step 1/2: Generating feature data...")
-    print(f"   └── Processing {len(tokens)} sequences with {len(selected_features)} features using {args.batch_size} batch size")
+    # Get feature data with progress tracking
+    print(f"\n🔄 Processing {len(tokens)} sequences with {len(selected_features)} features...")
+    print(f"   This will take longer due to the large amount of data being processed.")
+    print(f"   The results will be much more interpretable!\n")
     try:
         vis_data = get_feature_data(
             model=model,
@@ -367,13 +469,14 @@ def main():
         )
 
         # Save visualization
-        print(f"🔄 Step 2/2: Saving visualization to {args.output}...")
+        print(f"\n💾 Saving visualization to {args.output}...")
         vis_data.save_feature_centric_vis(
             filename=args.output,
             verbose=True,
         )
 
-        print(f"✅ Done! Open {args.output} in a browser.")
+        print(f"\n✅ Success! Open {args.output} in a browser to explore your features.")
+        print(f"   With {args.num_sequences} sequences analyzed, you should see much clearer patterns!")
 
     except Exception as e:
         print(f"Error during generation: {e}")
