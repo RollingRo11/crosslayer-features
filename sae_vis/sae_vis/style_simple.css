@@ -87,14 +87,40 @@ body {
     background: #f8f8f8;
 }
 
-.sort-btn.active, .filter-btn.active {
-    background: #6495ED;
-    color: white;
-    border-color: #4A7FC7;
+#sort-high.active,
+#sort-low.active,
+.sort-btn.active,
+button.sort-btn.active,
+button#sort-high.active,
+button#sort-low.active {
+    background: #28a745 !important;  /* Green for sort buttons */
+    background-color: #28a745 !important;
+    color: white !important;
+    border-color: #28a745 !important;
+    font-weight: bold;
 }
 
-.sort-btn.active:hover, .filter-btn.active:hover {
+#sort-high.active:hover,
+#sort-low.active:hover,
+.sort-btn.active:hover,
+button.sort-btn.active:hover,
+button#sort-high.active:hover,
+button#sort-low.active:hover {
+    background: #218838 !important;  /* Darker green on hover */
+    background-color: #218838 !important;
+    border-color: #1e7e34 !important;
+    color: white !important;
+}
+
+.filter-btn.active {
+    background: #6495ED;  /* Keep blue for filter button */
+    color: white;
+    border-color: #6495ED;
+}
+
+.filter-btn.active:hover {
     background: #5385DD;
+    border-color: #4375CD;
 }
 
 /* Feature info container - combines info and histogram */

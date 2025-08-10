@@ -13,6 +13,17 @@ function setupVisualization() {
     
     // Display feature
     displayFeature(firstFeature);
+    
+    // Add keyboard shortcuts for sorting
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowUp' && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            document.getElementById('sort-low')?.click();
+        } else if (e.key === 'ArrowDown' && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            document.getElementById('sort-high')?.click();
+        }
+    });
 }
 
 // Setup feature selector dropdown with density info
@@ -50,6 +61,7 @@ function setupFeatureSelector(features, currentFeature) {
     window.currentFeatures = [...window.allFeatures];
     window.hideDeadFeatures = false;
     
+    
     updateFeatureOptions(currentFeature);
     
     // Setup event listeners
@@ -58,18 +70,24 @@ function setupFeatureSelector(features, currentFeature) {
     });
     
     // Sort high to low
-    document.getElementById('sort-high').addEventListener('click', () => {
+    document.getElementById('sort-high').addEventListener('click', function(e) {
+        // Remove active from other button
+        document.getElementById('sort-low').classList.remove('active');
+        // Add active to this button
+        this.classList.add('active');
+        // Sort features
         window.currentFeatures.sort((a, b) => b.density - a.density);
-        document.querySelectorAll('.sort-btn').forEach(btn => btn.classList.remove('active'));
-        document.getElementById('sort-high').classList.add('active');
         updateFeatureOptions(Number(selector.value));
     });
     
-    // Sort low to high
-    document.getElementById('sort-low').addEventListener('click', () => {
+    // Sort low to high  
+    document.getElementById('sort-low').addEventListener('click', function(e) {
+        // Remove active from other button
+        document.getElementById('sort-high').classList.remove('active');
+        // Add active to this button
+        this.classList.add('active');
+        // Sort features
         window.currentFeatures.sort((a, b) => a.density - b.density);
-        document.querySelectorAll('.sort-btn').forEach(btn => btn.classList.remove('active'));
-        document.getElementById('sort-low').classList.add('active');
         updateFeatureOptions(Number(selector.value));
     });
     
@@ -85,13 +103,14 @@ function setupFeatureSelector(features, currentFeature) {
             window.currentFeatures = [...window.allFeatures];
         }
         
-        // Reapply current sort
-        const currentSort = document.querySelector('.sort-btn.active');
-        if (currentSort) {
-            currentSort.click();
-        } else {
-            updateFeatureOptions(Number(selector.value));
+        // Reapply current sort based on which button is active
+        if (document.getElementById('sort-high').classList.contains('active')) {
+            window.currentFeatures.sort((a, b) => b.density - a.density);
+        } else if (document.getElementById('sort-low').classList.contains('active')) {
+            window.currentFeatures.sort((a, b) => a.density - b.density);
         }
+        
+        updateFeatureOptions(Number(selector.value));
     });
 }
 
@@ -114,8 +133,7 @@ function updateFeatureOptions(currentFeature) {
         selector.appendChild(option);
     });
     
-    // Update sort button states
-    document.querySelectorAll('.sort-btn').forEach(btn => btn.classList.remove('active'));
+    // Don't remove active class - keep the current sort state
 }
 
 // Display a specific feature
