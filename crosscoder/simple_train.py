@@ -35,9 +35,8 @@ def main():
         print("Saving checkpoint...")
         trainer.save()
 
-        # Final analysis
         try:
-            final_analysis = trainer.analyze_feature_quality()
+            final_analysis = trainer.analyze()
             print(f"Final mean sparsity: {final_analysis['mean_sparsity']:.3f}")
             print(f"Final dead features: {final_analysis['dead_features']}/{final_analysis['total_features']}")
         except Exception as e:

@@ -8,6 +8,7 @@ dependencies = [
     "circuitsvis>=1.43.3",
     "datasets>=2.0.0,<3.0.0",
     "frozendict>=2.0.0",
+    "huggingface-cli",
     "ipykernel>=6.29.5",
     "nnsight>=0.4.8",
     "path>=17.1.0",

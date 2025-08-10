@@ -23,18 +23,23 @@ from model_utils import get_layer_output
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["TORCH_USE_CUDA_DSA"] = "1"
 
-# Set up local dataset cache directory
 PROJECT_ROOT = Path(__file__).parent.parent
 DATASET_CACHE_DIR = PROJECT_ROOT / "data" / "hf_datasets_cache"
 DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# checklist:
+# - move to gemma3 4B param
+# - JumpReLU
+# - multigpu support
+# due: tuesday August 12th, 2025
+
 cc_config = {
     "seed": 11112005,
     "batch_size": 2048,
-    "buffer_mult": 8,
+    "buffer_mult": 16,
     "lr": 3e-5,
     "num_tokens": int(4e8),
-    "l1_coefficient": 1.5,
+    "l1_coefficient": 1.8,
     "beta1": 0.9,
     "beta2": 0.999,
     "context": 128,
@@ -42,17 +47,16 @@ cc_config = {
     "model_batch_size": 16,
     "log_interval": 100,
     "save_interval": 50000,
-    "model_name": "pythia",
+    "model_name": "pythia", # gpt2, pythia, gemma3-4B
     "dtype": torch.bfloat16,
     "ae_dim": 2**15,
     "drop_bos": True,
     "total_steps": 100000,
     "normalization": "layer_wise",
-    "optimizer": "adamw", # Options: "adamw", "sophia"
+    "optimizer": "adamw",
     "dec_init_norm": 0.09,
 }
 
-# Use absolute path relative to this file's location
 CROSSCODER_DIR = Path(__file__).parent
 SAVE_DIR = CROSSCODER_DIR / "saves"
 WANDB_DIR = CROSSCODER_DIR / "wandb"
@@ -81,6 +85,9 @@ class Crosscoder(nn.Module):
             self.context = 2048
             self.num_layers = self.modelcfg['num_hidden_layers']
             self.resid_dim = self.modelcfg['hidden_size']
+        elif self.cfg["model_name"] == "gemma3-4b"
+            self.context = 128000
+            self.num_layers = self.modelcfg['']
 
         self.init_norm = cfg['dec_init_norm']
 
