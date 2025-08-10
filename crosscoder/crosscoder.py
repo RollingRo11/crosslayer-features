@@ -29,12 +29,12 @@ DATASET_CACHE_DIR = PROJECT_ROOT / "data" / "hf_datasets_cache"
 DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 cc_config = {
-    "seed": 51,
+    "seed": 11112005,
     "batch_size": 2048,
-    "buffer_mult": 16,
+    "buffer_mult": 8,
     "lr": 3e-5,
     "num_tokens": int(4e8),
-    "l1_coefficient": 2.5,
+    "l1_coefficient": 1.5,
     "beta1": 0.9,
     "beta2": 0.999,
     "context": 128,
@@ -49,7 +49,7 @@ cc_config = {
     "total_steps": 100000,
     "normalization": "layer_wise",
     "optimizer": "adamw", # Options: "adamw", "sophia"
-    "dec_init_norm": 0.05,
+    "dec_init_norm": 0.09,
 }
 
 # Use absolute path relative to this file's location
@@ -246,7 +246,7 @@ class Buffer:
         self.first = True
         self.normalize = True
 
-        self.dataset = load_dataset('HuggingFaceFW/fineweb', name='sample-100BT', split='train', streaming=False, cache_dir=str(DATASET_CACHE_DIR))
+        self.dataset = load_dataset('monology/pile-uncopyrighted', split='train', streaming=True, cache_dir=str(DATASET_CACHE_DIR))
         self.dataset_iter = iter(self.dataset)
 
         estimated_norm_scaling_factors = self.estimate_norm_scaling_factor(cfg["model_batch_size"])
@@ -474,8 +474,8 @@ class Trainer:
             return 1.0 - (step - 0.8 * self.total_steps) / (0.2 * self.total_steps)
 
     def get_l1_coeff(self):
-        if self.step_counter < 0.08 * self.total_steps:
-            return self.cfg["l1_coefficient"] * self.step_counter / (0.08 * self.total_steps)
+        if self.step_counter < 0.04 * self.total_steps:
+            return self.cfg["l1_coefficient"] * self.step_counter / (0.04 * self.total_steps)
         else:
             return self.cfg["l1_coefficient"]
 
