@@ -309,11 +309,11 @@ def parse_feature_data(
                 feat_acts = all_feat_acts[feat].flatten()
                 # Calculate activation density (percentage of non-zero activations)
                 total_tokens = feat_acts.numel()
-                active_tokens = (feat_acts > 1e-8).sum().item()  # Same threshold as featAct
+                active_tokens = (feat_acts > 1e-10).sum().item()  # Lower threshold for sparse features
                 density_percent = (active_tokens / total_tokens) * 100 if total_tokens > 0 else 0
 
                 # Only include non-zero activations for histogram to avoid zero-heavy distribution
-                non_zero_acts = feat_acts[feat_acts > 1e-8]
+                non_zero_acts = feat_acts[feat_acts > 1e-10]
 
                 if non_zero_acts.numel() > 0:
                     hist_data = ActsHistogramData.from_data(
@@ -440,8 +440,9 @@ def parse_feature_data(
                 else:
                     # Flatten and get top-k indices
                     flat_acts = valid_feat_acts.flatten()
+                    # Ensure we get the actual top values, even if they're small
                     topk_values, topk_flat_indices = torch.topk(
-                        flat_acts, k=total_sequences, largest=True
+                        flat_acts, k=min(total_sequences, flat_acts.numel()), largest=True
                     )
 
                     # Convert back to batch/seq indices
@@ -541,7 +542,7 @@ def parse_feature_data(
 
                                 # For hover data, show simple placeholder values
                                 # In a full implementation, these would be computed via model forward pass
-                                if act_magnitude > 0.1:  # Only show hover for significant activations
+                                if act_magnitude > 1e-10:  # Show hover for any non-zero activations
                                     top_token_ids_list.append([model.tokenizer.vocab_size - 1])  # Placeholder
                                     top_logits_list.append([act_magnitude])
                                     bottom_token_ids_list.append([0])  # Placeholder
