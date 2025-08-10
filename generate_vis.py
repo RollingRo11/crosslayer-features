@@ -83,7 +83,7 @@ def load_latest_checkpoint(device=None):
             "dtype": torch.float32,
             "drop_bos": True,
         }
-    
+
     # Add missing required fields with defaults
     if 'dec_init_norm' not in cfg:
         cfg['dec_init_norm'] = 0.05
@@ -187,68 +187,87 @@ def main():
 
     print(f"Model dimension verification passed: {model_hidden_size}")
 
-    # Load diverse data from multiple sources for better variety
-    print("Loading diverse text data...")
-    
-    # Use OpenWebText and Wikipedia for truly diverse content
+    # Load diverse data from The Pile dataset (streaming)
+    print("Loading diverse text data from The Pile...")
+
+    # Set up dataset cache directory (same as crosscoder)
+    from pathlib import Path
+    PROJECT_ROOT = Path(__file__).parent
+    DATASET_CACHE_DIR = PROJECT_ROOT / "data" / "hf_datasets_cache"
+    DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
     all_texts = []
     target_sequences = 100  # More sequences for diversity
     seq_len = 128  # Shorter sequences but with sliding windows for variety
-    
-    # Try to load from multiple sources for diversity
+
+    # Stream The Pile dataset like in crosscoder training
     try:
-        # Load from OpenWebText
-        dataset = load_dataset("Skylion007/openwebtext", split="train", streaming=True)
-        
-        # Collect diverse texts
+        print("Streaming from The Pile dataset...")
+        dataset = load_dataset(
+            'monology/pile-uncopyrighted',
+            split='train',
+            streaming=True,
+            cache_dir=str(DATASET_CACHE_DIR)
+        )
+
+        # Collect diverse texts from The Pile
         for i, example in enumerate(dataset):
-            if len(all_texts) >= target_sequences // 2:
+            if len(all_texts) >= target_sequences:
                 break
-            
+
             text = example.get('text', '')
+            if not text:
+                continue
+
             # Clean and normalize text
             text = ' '.join(text.split())
-            
+
             # Only use texts with reasonable length for sliding windows
             if 200 < len(text.split()) < 5000:
                 all_texts.append(text)
-        
-        # Also add some Wikipedia for even more diversity
-        wiki_dataset = load_dataset("wikipedia", "20220301.en", split="train", streaming=True)
-        for i, example in enumerate(wiki_dataset):
-            if len(all_texts) >= target_sequences:
-                break
-            
-            text = example.get('text', '')
-            # Clean and normalize
-            text = ' '.join(text.split())
-            
-            if 200 < len(text.split()) < 5000:
-                all_texts.append(text)
-                
+
+            # Progress indicator
+            if i % 1000 == 0 and i > 0:
+                print(f"  Processed {i} samples, collected {len(all_texts)} suitable texts...")
+
     except Exception as e:
-        print(f"Error loading diverse datasets: {e}")
-        print("Falling back to simpler dataset...")
-        # Fallback to a simpler dataset
-        dataset = load_dataset("wikitext", "wikitext-103-v1", split="train", streaming=True)
-        for i, example in enumerate(dataset):
+        print(f"Error loading The Pile dataset: {e}")
+        print("Falling back to simple synthetic dataset...")
+        # Create synthetic diverse texts as fallback
+        synthetic_texts = [
+            "The quantum mechanics of particle physics reveals fundamental properties of matter and energy throughout the universe.",
+            "Machine learning algorithms have revolutionized data analysis across industries including healthcare, finance, and technology.",
+            "Climate change affects global weather patterns and ecosystem stability, requiring immediate international cooperation.",
+            "The history of ancient civilizations provides insights into human development, culture, and social organization.",
+            "Neuroscience research explores the complex mechanisms of brain function, cognition, and consciousness.",
+            "Economic policies influence market dynamics, social welfare, and international trade relationships.",
+            "Artistic expression reflects cultural values, human creativity, and the evolution of aesthetic principles.",
+            "Technological innovation drives progress in medicine, healthcare, and scientific research methodologies.",
+            "Environmental conservation efforts protect biodiversity worldwide while promoting sustainable development practices.",
+            "Space exploration expands our understanding of the universe, planetary science, and extraterrestrial life.",
+        ]
+
+        # Expand synthetic texts to have more variety
+        for base_text in synthetic_texts:
+            for variation in range(10):  # Create variations
+                text = f"{base_text} This represents example {variation + 1} of scientific and technical discourse."
+                all_texts.append(text)
+                if len(all_texts) >= target_sequences:
+                    break
             if len(all_texts) >= target_sequences:
                 break
-            text = example.get('text', '')
-            if len(text) > 500:
-                all_texts.append(text)
-    
+
     print(f"Collected {len(all_texts)} diverse text samples")
-    
+
     # Use sliding windows to create more diverse sequences from each text
     tokens = []
     window_stride = seq_len // 2  # 50% overlap for more diversity
-    
+
     for text in all_texts[:target_sequences]:
         # Tokenize the full text
         token_ids = model.tokenizer(text, return_tensors="pt", truncation=False, add_special_tokens=False)
         input_ids = token_ids['input_ids'].squeeze(0)
-        
+
         # Skip if too short
         if len(input_ids) < seq_len:
             # Pad if needed
@@ -261,14 +280,14 @@ def main():
             for start_idx in range(0, min(len(input_ids) - seq_len, seq_len * 3), window_stride):
                 window = input_ids[start_idx:start_idx + seq_len]
                 tokens.append(window.unsqueeze(0))
-                
+
                 # Limit windows per text to avoid too much from one source
                 if len(tokens) >= target_sequences * 2:
                     break
-        
+
         if len(tokens) >= target_sequences * 2:
             break
-    
+
     # Ensure we have enough sequences
     if len(tokens) < 20:
         print(f"Warning: Only got {len(tokens)} sequences, generating more...")
@@ -285,12 +304,12 @@ def main():
             "Environmental conservation efforts protect biodiversity worldwide.",
             "Space exploration expands our understanding of the universe.",
         ]
-        
+
         for text in sample_texts * 5:  # Repeat to get more sequences
-            token_ids = model.tokenizer(text, return_tensors="pt", max_length=seq_len, 
+            token_ids = model.tokenizer(text, return_tensors="pt", max_length=seq_len,
                                        truncation=True, padding="max_length")
             tokens.append(token_ids['input_ids'])
-    
+
     tokens = torch.cat(tokens[:target_sequences], dim=0)
     print(f"Created {len(tokens)} diverse sequences of length {seq_len} using sliding windows")
 

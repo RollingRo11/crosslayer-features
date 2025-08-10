@@ -95,10 +95,26 @@ def load_crosscoder_checkpoint(checkpoint_path: str, device: str) -> tuple[Cross
     return crosscoder, model
 
 
-def tokenize_dataset(dataset_name: str, model: LanguageModel, seq_len: int, num_samples: int = 10000):
+def tokenize_dataset(dataset_name: str = 'monology/pile-uncopyrighted', model: LanguageModel = None, seq_len: int = 128, num_samples: int = 10000):
     """Tokenize a dataset for use with the crosscoder visualization."""
-    # Load dataset
-    dataset = load_dataset(dataset_name, split="train", streaming=True)
+    from pathlib import Path
+
+    # Set up dataset cache directory (same as crosscoder)
+    PROJECT_ROOT = Path(__file__).parent.parent.parent
+    DATASET_CACHE_DIR = PROJECT_ROOT / "data" / "hf_datasets_cache"
+    DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # Load dataset with proper caching and streaming
+        dataset = load_dataset(dataset_name, split="train", streaming=True, cache_dir=str(DATASET_CACHE_DIR))
+    except Exception as e:
+        print(f"Error loading {dataset_name}: {e}")
+        # Fallback to The Pile if another dataset fails
+        if dataset_name != 'monology/pile-uncopyrighted':
+            print("Falling back to The Pile dataset...")
+            dataset = load_dataset('monology/pile-uncopyrighted', split="train", streaming=True, cache_dir=str(DATASET_CACHE_DIR))
+        else:
+            raise e
 
     # Get tokenizer
     tokenizer = model.tokenizer
@@ -118,10 +134,22 @@ def tokenize_dataset(dataset_name: str, model: LanguageModel, seq_len: int, num_
             # Try to find any text field
             text = str(list(sample.values())[0])
 
-        # Tokenize
-        tokens = tokenizer.encode(text, max_length=seq_len, truncation=True)
-        if len(tokens) == seq_len:
-            all_tokens.append(tokens)
+        # Skip empty texts
+        if not text or not text.strip():
+            continue
+
+        try:
+            # Tokenize with proper error handling
+            tokens = tokenizer.encode(text, max_length=seq_len, truncation=True)
+            if len(tokens) == seq_len:
+                all_tokens.append(tokens)
+        except Exception as e:
+            # Skip problematic texts that cause encoding issues
+            continue
+
+        # Progress indicator
+        if i % 1000 == 0 and i > 0:
+            print(f"Processed {i} samples, collected {len(all_tokens)} sequences...")
 
     # Convert to tensor
     return torch.tensor(all_tokens, dtype=torch.long)
