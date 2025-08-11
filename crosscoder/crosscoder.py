@@ -32,6 +32,8 @@ DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # - JumpReLU
 # - multigpu support
 # due: tuesday August 12th, 2025
+#
+# Matryoshka Crosscoder???
 
 cc_config = {
     "seed": 11112005,
@@ -85,7 +87,7 @@ class Crosscoder(nn.Module):
             self.context = 2048
             self.num_layers = self.modelcfg['num_hidden_layers']
             self.resid_dim = self.modelcfg['hidden_size']
-        elif self.cfg["model_name"] == "gemma3-4b"
+        elif self.cfg["model_name"] == "gemma3-4b":
             self.context = 128000
             self.num_layers = self.modelcfg['']
 
