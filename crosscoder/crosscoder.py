@@ -16,6 +16,7 @@ from sophia import SophiaG
 import sys
 from pathlib import Path
 import os
+import torch.autograd as autograd
 
 sys.path.append(str(Path(__file__).parent.parent / "sae_vis" / "sae_vis"))
 from model_utils import get_layer_output
@@ -31,7 +32,7 @@ DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # - move to gemma3 4B param
 # - JumpReLU
 # - multigpu support
-# due: tuesday August 12th, 2025
+# due: tuesday August 12th, 2025 (update I failed)
 #
 # Matryoshka Crosscoder???
 
@@ -39,12 +40,12 @@ cc_config = {
     "seed": 11112005,
     "batch_size": 2048,
     "buffer_mult": 16,
-    "lr": 3e-5,
+    "lr": 2e-5,
     "num_tokens": int(4e8),
-    "l1_coefficient": 1.8,
+    "l1_coefficient": 1.5,
     "beta1": 0.9,
     "beta2": 0.999,
-    "context": 128,
+    "context": 512,
     "device": "cuda",
     "model_batch_size": 16,
     "log_interval": 100,
@@ -56,7 +57,7 @@ cc_config = {
     "total_steps": 100000,
     "normalization": "layer_wise",
     "optimizer": "adamw",
-    "dec_init_norm": 0.09,
+    "dec_init_norm": 0.07,
 }
 
 CROSSCODER_DIR = Path(__file__).parent
@@ -92,12 +93,12 @@ class Crosscoder(nn.Module):
             self.num_layers = self.modelcfg['']
 
         self.init_norm = cfg['dec_init_norm']
-
         self.seed = self.cfg["seed"]
         torch.manual_seed(self.seed)
         self.ae_dim = cfg["ae_dim"]
         self.dtype = cfg["dtype"]
         self.save_dir = None
+        self.threshold = nn.Parameter(torch.full((self.ae_dim,), 0.001, dtype=self.dtype))
 
         # [layers, model resid dim (embd), crosscoder blowup dim]
         self.W_enc = nn.Parameter(
@@ -139,7 +140,8 @@ class Crosscoder(nn.Module):
         )
 
         if apply_act:
-            acts = F.relu(x_enc + self.b_enc)
+            preacts = x_enc + self.b_enc
+            acts = JumpReLUFunction.apply(preacts, self.threshold, 0.001)
         else:
             acts = x_enc + self.b_enc
 
@@ -216,6 +218,37 @@ class Crosscoder(nn.Module):
         self.save_version += 1
 
 
+class JumpReLUFunction(autograd.Function):
+    @staticmethod
+    def forward(ctx, x, threshold, bandwidth):
+        ctx.save_for_backward(x, threshold, torch.tensor(bandwidth))
+        return x * (x > threshold).float()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, threshold, bandwidth_tensor = ctx.saved_tensors
+        bandwidth = bandwidth_tensor.item()
+        x_grad = (x > threshold).float() * grad_output
+        threshold_grad = (
+            -(threshold / bandwidth)
+            * RectangleFunction.apply((x - threshold) / bandwidth)
+            * grad_output
+        )
+        return x_grad, threshold_grad, None  # None for bandwidth
+
+class RectangleFunction(autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        ctx.save_for_backward(x)
+        return ((x > -0.5) & (x < 0.5)).float()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (x,) = ctx.saved_tensors
+        grad_input = grad_output.clone()
+        grad_input[(x <= -0.5) | (x >= 0.5)] = 0
+        return grad_input
+
 
 class Buffer:
     """
@@ -232,7 +265,6 @@ class Buffer:
 
         self.modelcfg = self.model.config.to_dict() # type: ignore
 
-        # Handle different model architectures
         if 'n_layer' in self.modelcfg:
             self.num_layers = self.modelcfg['n_layer']
             self.resid_dim = self.modelcfg['n_embd']
@@ -258,12 +290,11 @@ class Buffer:
         self.dataset = load_dataset('monology/pile-uncopyrighted', split='train', streaming=True, cache_dir=str(DATASET_CACHE_DIR))
         self.dataset_iter = iter(self.dataset)
 
-        estimated_norm_scaling_factors = self.estimate_norm_scaling_factor(cfg["model_batch_size"])
-
+        estimated_norm_scaling_factors = self.estimate_norm_scaling_factor(batch_size=2)
         self.normalisation_factor = torch.tensor(
             estimated_norm_scaling_factors,
             device=cfg["device"],
-            dtype=torch.float32,
+            dtype=torch.bfloat16,
         )
 
         self.refresh()
@@ -272,15 +303,12 @@ class Buffer:
     def estimate_norm_scaling_factor(self, batch_size, n_batches_for_norm_estimate: int = 100):
         norms_per_layer = [[] for _ in range(self.num_layers)]
 
-        all_tokens = self.get_tokens_for_norm_estimation(n_batches_for_norm_estimate, batch_size)
+        token_generator = self.get_tokens_batch_generator(n_batches_for_norm_estimate, batch_size)
 
-        for i in tqdm.tqdm(
-            range(n_batches_for_norm_estimate), desc="Estimating norm scaling factor"
-        ):
-            tokens = all_tokens[i * batch_size : (i + 1) * batch_size]
+        for tokens in tqdm.tqdm(token_generator, total=n_batches_for_norm_estimate, desc="Estimating norm scaling factor"):
+            tokens = tokens.to(self.cfg["device"])
 
             all_acts = []
-
             for j in range(0, len(tokens), self.cfg["model_batch_size"]):
                 batch_tokens = tokens[j:j + self.cfg["model_batch_size"]]
 
@@ -303,6 +331,7 @@ class Buffer:
             for layer_idx in range(self.num_layers):
                 norms_per_layer[layer_idx].append(layer_norms[:, layer_idx].mean().item())
 
+        # ... (rest of the function is the same) ...
         scaling_factors = []
         for layer_idx in range(self.num_layers):
             mean_norm = np.mean(norms_per_layer[layer_idx])
@@ -311,67 +340,82 @@ class Buffer:
 
         return scaling_factors
 
-    @torch.no_grad()
-    def get_tokens_for_norm_estimation(self, n_batches, batch_size):
-        """Get all tokens needed for norm estimation at once"""
-        # Use the same non-streaming dataset that was already loaded
-        norm_dataset = self.dataset
 
-        tokens = []
-        count = 0
-        total_samples = n_batches * batch_size
+    def get_tokens_batch_generator(self, n_batches, batch_size):
+        """
+        A generator that yields batches of tokens.
+        This avoids loading the entire dataset into memory.
+        """
+        batch_count = 0
+        while batch_count < n_batches:
+            tokens = []
+            count = 0
 
-        for item in norm_dataset:
-            if count >= total_samples:
-                break
+            # Collect tokens for one batch
+            while count < batch_size:
+                try:
+                    item = next(self.dataset_iter)
+                except StopIteration:
+                    self.dataset_iter = iter(self.dataset) # Reset iterator
+                    item = next(self.dataset_iter)
 
-            text = item['text']
+                text = item['text']
+                if len(text.strip()) < 50:
+                    continue
 
-            if len(text.strip()) < 50:
-                continue
+                token_ids = self.model.tokenizer.encode(
+                    text,
+                    return_tensors="pt",
+                    max_length=self.context,
+                    truncation=True,
+                    # Use 'max_length' to ensure consistent tensor shapes
+                    padding="max_length"
+                )
+                tokens.append(token_ids)
+                count += 1
 
-            token_ids = self.model.tokenizer.encode(
-                text,
-                return_tensors="pt",
-                max_length=self.context,
-                truncation=True,
-                padding="max_length"
-            )
-            tokens.append(token_ids)
-            count += 1
-        return torch.cat(tokens, dim=0)
+            # Yield a single batch
+            yield torch.cat(tokens, dim=0)
+            batch_count += 1
 
     @torch.no_grad()
     def refresh(self):
         tokens = self.get_tokens_batch()
 
-        all_acts = []
+        self.buffer = torch.zeros(
+            (self.buffer_size, self.num_layers, self.resid_dim),
+            dtype=self.cfg["dtype"],
+            device=self.cfg["device"]
+        )
 
+        pointer = 0
         for i in range(0, len(tokens), self.cfg["model_batch_size"]):
-            batch_tokens = tokens[i:i + self.cfg["model_batch_size"]]
+            batch_tokens = tokens[i:i + self.cfg["model_batch_size"]].to(self.cfg["device"])
 
             with self.model.trace(batch_tokens) as tracer:
-
                 layer_outputs = []
                 for layer_idx in range(self.num_layers):
-
                     layer_out = get_layer_output(self.model, layer_idx, tracer)
                     layer_outputs.append(layer_out)
 
-            batch_acts = torch.stack(layer_outputs, dim=2)
+            batch_acts = torch.stack(layer_outputs, dim=2).to(self.cfg["dtype"]) # Shape: (batch, seq, layers, dim)
 
             if self.cfg.get("drop_bos", True):
                 batch_acts = batch_acts[:, 1:, :, :]
 
             batch_acts = batch_acts.reshape(-1, self.num_layers, self.resid_dim)
+            num_tokens_in_batch = batch_acts.shape[0]
 
-            all_acts.append(batch_acts)
+            if pointer + num_tokens_in_batch > self.buffer_size:
+                remaining_space = self.buffer_size - pointer
+                self.buffer[pointer:] = batch_acts[:remaining_space]
+                break
+            else:
+                self.buffer[pointer : pointer + num_tokens_in_batch] = batch_acts
+                pointer += num_tokens_in_batch
 
-        self.buffer = torch.cat(all_acts, dim=0)
-
-        perm = torch.randperm(len(self.buffer))
+        perm = torch.randperm(len(self.buffer), device=self.cfg["device"])
         self.buffer = self.buffer[perm]
-
         self.pointer = 0
 
     @torch.no_grad()
