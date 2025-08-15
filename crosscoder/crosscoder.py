@@ -80,26 +80,40 @@ class Crosscoder(nn.Module):
         self.cfg = cfg
         self.model = model
         self.modelcfg = self.model.config.to_dict() # type: ignore
+        
+        # Get context length based on model type
         if self.cfg["model_name"] == "gpt2":
             self.context = 1024
-            self.num_layers = self.modelcfg['n_layer']
-            self.resid_dim = self.modelcfg['n_embd']
         elif self.cfg["model_name"] == "pythia":
             self.context = 2048
-            self.num_layers = self.modelcfg['num_hidden_layers']
-            self.resid_dim = self.modelcfg['hidden_size']
         elif self.cfg["model_name"] == "gemma3-4b":
             self.context = 8192
-            self.num_layers = self.modelcfg['num_hidden_layers']
-            self.resid_dim = self.modelcfg['hidden_size']
         elif self.cfg["model_name"] == "qwen3-4b":
             self.context = 32768
-            self.num_layers = self.modelcfg['num_hidden_layers']
-            self.resid_dim = self.modelcfg['hidden_size']
         elif self.cfg["model_name"] == "gemma2-2b":
             self.context = 8192
+        else:
+            self.context = 1024  # Default fallback
+        
+        # Get number of layers - try different config keys
+        if 'num_hidden_layers' in self.modelcfg:
             self.num_layers = self.modelcfg['num_hidden_layers']
+        elif 'n_layer' in self.modelcfg:
+            self.num_layers = self.modelcfg['n_layer']
+        elif 'num_layers' in self.modelcfg:
+            self.num_layers = self.modelcfg['num_layers']
+        else:
+            raise ValueError(f"Could not find number of layers in model config. Available keys: {list(self.modelcfg.keys())}")
+        
+        # Get hidden/residual dimension - try different config keys
+        if 'hidden_size' in self.modelcfg:
             self.resid_dim = self.modelcfg['hidden_size']
+        elif 'n_embd' in self.modelcfg:
+            self.resid_dim = self.modelcfg['n_embd']
+        elif 'd_model' in self.modelcfg:
+            self.resid_dim = self.modelcfg['d_model']
+        else:
+            raise ValueError(f"Could not find hidden dimension in model config. Available keys: {list(self.modelcfg.keys())}")
 
         self.init_norm = cfg['dec_init_norm']
         self.seed = self.cfg["seed"]
@@ -280,14 +294,25 @@ class Buffer:
 
         self.modelcfg = self.model.config.to_dict() # type: ignore
 
-        if 'n_layer' in self.modelcfg:
-            self.num_layers = self.modelcfg['n_layer']
-            self.resid_dim = self.modelcfg['n_embd']
-        elif 'num_hidden_layers' in self.modelcfg:
+        # Get number of layers - try different config keys
+        if 'num_hidden_layers' in self.modelcfg:
             self.num_layers = self.modelcfg['num_hidden_layers']
-            self.resid_dim = self.modelcfg['hidden_size']
+        elif 'n_layer' in self.modelcfg:
+            self.num_layers = self.modelcfg['n_layer']
+        elif 'num_layers' in self.modelcfg:
+            self.num_layers = self.modelcfg['num_layers']
         else:
-            raise ValueError(f"Unsupported model architecture. Config keys: {list(self.modelcfg.keys())}")
+            raise ValueError(f"Could not find number of layers in model config. Available keys: {list(self.modelcfg.keys())}")
+        
+        # Get hidden/residual dimension - try different config keys
+        if 'hidden_size' in self.modelcfg:
+            self.resid_dim = self.modelcfg['hidden_size']
+        elif 'n_embd' in self.modelcfg:
+            self.resid_dim = self.modelcfg['n_embd']
+        elif 'd_model' in self.modelcfg:
+            self.resid_dim = self.modelcfg['d_model']
+        else:
+            raise ValueError(f"Could not find hidden dimension in model config. Available keys: {list(self.modelcfg.keys())}")
 
         self.buffer_size = self.cfg["batch_size"] * cfg["buffer_mult"]
         self.buffer_batches = self.buffer_size // (self.context - 1)
