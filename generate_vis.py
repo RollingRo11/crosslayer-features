@@ -105,6 +105,9 @@ def load_latest_checkpoint(device=None):
         "pythia1b": "EleutherAI/pythia-1b-deduped",
         "pythia1.4b": "EleutherAI/pythia-1.4b-deduped",
         "pythia2.8b": "EleutherAI/pythia-2.8b-deduped",
+        "gemma3-4b": "google/gemma-2-9b",
+        "qwen3-4b": "Qwen/Qwen2.5-3B",
+        "gemma2-2b": "google/gemma-2-2b",
     }
 
     actual_model_name = model_name_mapping.get(model_name, model_name)

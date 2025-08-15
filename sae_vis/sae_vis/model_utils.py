@@ -13,7 +13,7 @@ def detect_model_type(model) -> str:
         model: The model object (either raw model or LanguageModel wrapper)
 
     Returns:
-        str: Model type ('gpt2', 'gpt_neox', or 'unknown')
+        str: Model type ('gpt2', 'gpt_neox', 'gemma', 'qwen', 'llama', or 'unknown')
     """
     # Handle LanguageModel wrapper
     if hasattr(model, '_model'):
@@ -29,9 +29,17 @@ def detect_model_type(model) -> str:
     if hasattr(actual_model, 'gpt_neox') and hasattr(actual_model.gpt_neox, 'layers'):
         return 'gpt_neox'
 
-    # Check for other common architectures
+    # Check for Gemma models
     if hasattr(actual_model, 'model') and hasattr(actual_model.model, 'layers'):
-        return 'llama'  # LLaMA/Mistral style
+        # Check if it's specifically a Gemma model
+        if hasattr(actual_model, 'config') and 'gemma' in str(type(actual_model.config)).lower():
+            return 'gemma'
+        # Check if it's specifically a Qwen model  
+        elif hasattr(actual_model, 'config') and 'qwen' in str(type(actual_model.config)).lower():
+            return 'qwen'
+        # General LLaMA-style architecture (includes Gemma/Qwen as fallback)
+        else:
+            return 'llama'
 
     return 'unknown'
 
@@ -58,7 +66,7 @@ def get_model_layers(model) -> Any:
         return actual_model.transformer.h
     elif model_type == 'gpt_neox':
         return actual_model.gpt_neox.layers
-    elif model_type == 'llama':
+    elif model_type in ['llama', 'gemma', 'qwen']:
         return actual_model.model.layers
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
@@ -86,7 +94,7 @@ def get_embedding_matrix(model) -> torch.Tensor:
         return actual_model.transformer.wte.weight
     elif model_type == 'gpt_neox':
         return actual_model.gpt_neox.embed_in.weight
-    elif model_type == 'llama':
+    elif model_type in ['llama', 'gemma', 'qwen']:
         return actual_model.model.embed_tokens.weight
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
@@ -137,7 +145,7 @@ def get_layer_output(model, layer_idx: int, trace_context):
         return model.transformer.h[layer_idx].output[0].save()
     elif model_type == 'gpt_neox':
         return model.gpt_neox.layers[layer_idx].output[0].save()
-    elif model_type == 'llama':
+    elif model_type in ['llama', 'gemma', 'qwen']:
         return model.model.layers[layer_idx].output[0].save()
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
@@ -197,6 +205,8 @@ def get_hidden_size(model) -> int:
             return config.hidden_size
         elif hasattr(config, 'd_model'):
             return config.d_model
+        elif hasattr(config, 'n_embd'):
+            return config.n_embd
 
     # Fallback: infer from embedding matrix
     embedding_matrix = get_embedding_matrix(model)

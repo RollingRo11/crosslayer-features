@@ -50,7 +50,7 @@ cc_config = {
     "model_batch_size": 16,
     "log_interval": 100,
     "save_interval": 50000,
-    "model_name": "pythia", # gpt2, pythia, gemma3-4B
+    "model_name": "pythia", # gpt2, pythia, gemma3-4b, qwen3-4b, gemma2-2b
     "dtype": torch.bfloat16,
     "ae_dim": 2**15,
     "drop_bos": True,
@@ -89,8 +89,17 @@ class Crosscoder(nn.Module):
             self.num_layers = self.modelcfg['num_hidden_layers']
             self.resid_dim = self.modelcfg['hidden_size']
         elif self.cfg["model_name"] == "gemma3-4b":
-            self.context = 128000
-            self.num_layers = self.modelcfg['']
+            self.context = 8192
+            self.num_layers = self.modelcfg['num_hidden_layers']
+            self.resid_dim = self.modelcfg['hidden_size']
+        elif self.cfg["model_name"] == "qwen3-4b":
+            self.context = 32768
+            self.num_layers = self.modelcfg['num_hidden_layers']
+            self.resid_dim = self.modelcfg['hidden_size']
+        elif self.cfg["model_name"] == "gemma2-2b":
+            self.context = 8192
+            self.num_layers = self.modelcfg['num_hidden_layers']
+            self.resid_dim = self.modelcfg['hidden_size']
 
         self.init_norm = cfg['dec_init_norm']
         self.seed = self.cfg["seed"]
@@ -141,7 +150,7 @@ class Crosscoder(nn.Module):
 
         if apply_act:
             preacts = x_enc + self.b_enc
-            acts = JumpReLUFunction.apply(preacts, self.threshold, 0.001)
+            acts = JumpReLUFunction.apply(preacts, self.threshold, 0.1)
         else:
             acts = x_enc + self.b_enc
 
@@ -262,6 +271,12 @@ class Buffer:
             self.context = 1024
         elif self.cfg["model_name"] == "pythia":
             self.context = 2048
+        elif self.cfg["model_name"] == "gemma3-4b":
+            self.context = 8192
+        elif self.cfg["model_name"] == "qwen3-4b":
+            self.context = 32768
+        elif self.cfg["model_name"] == "gemma2-2b":
+            self.context = 8192
 
         self.modelcfg = self.model.config.to_dict() # type: ignore
 
@@ -488,6 +503,15 @@ class Trainer:
         elif self.cfg["model_name"] == "pythia":
             self.model = nnsight.LanguageModel("EleutherAI/pythia-2.8b-deduped", device_map="auto")
             self.context = 2048
+        elif self.cfg["model_name"] == "gemma3-4b":
+            self.model = nnsight.LanguageModel("google/gemma-2-9b", device_map="auto")  # Using gemma-2-9b as closest match
+            self.context = 8192
+        elif self.cfg["model_name"] == "qwen3-4b":
+            self.model = nnsight.LanguageModel("Qwen/Qwen2.5-3B", device_map="auto")  # Using Qwen2.5-3B as closest match
+            self.context = 32768
+        elif self.cfg["model_name"] == "gemma2-2b":
+            self.model = nnsight.LanguageModel("google/gemma-2-2b", device_map="auto")
+            self.context = 8192
 
         self.crosscoder = Crosscoder(cfg, model=self.model)
         self.buffer = Buffer(cfg, model=self.model)
