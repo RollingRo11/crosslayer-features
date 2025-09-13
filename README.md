@@ -7,4 +7,4 @@ A lot of the underlying crosscoder structure is from this [repo](https://github.
 
 I create a cool visualization dashboard (inspired by a Goodfire tweet I saw a while ago).
 
-<img width="1852" height="1180" alt="Screenshot 2025-09-13 at 11 46 24 AM" src="https://github.com/user-attachments/assets/aea8f8fb-8ae1-41a7-b3f9-a111d9ec0b35" />
+<img width="3194" height="7764" alt="image" src="https://github.com/user-attachments/assets/d6ba45e2-0232-48bd-b782-f12be6df3fce" />
