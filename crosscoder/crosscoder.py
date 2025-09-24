@@ -28,14 +28,6 @@ PROJECT_ROOT = Path(__file__).parent.parent
 DATASET_CACHE_DIR = PROJECT_ROOT / "data" / "hf_datasets_cache"
 DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# checklist:
-# - move to gemma3 4B param
-# - JumpReLU
-# - multigpu support
-# due: tuesday August 12th, 2025 (update I failed)
-#
-# Matryoshka Crosscoder???
-
 cc_config = {
     "seed": 11112005,
     "batch_size": 2048,
@@ -50,7 +42,7 @@ cc_config = {
     "model_batch_size": 16,
     "log_interval": 100,
     "save_interval": 50000,
-    "model_name": "pythia", # gpt2, pythia, gemma3-4b, qwen3-4b, gemma2-2b
+    "model_name": "pythia",  # gpt2, pythia, gemma3-4b, qwen3-4b, gemma2-2b
     "dtype": torch.bfloat16,
     "ae_dim": 2**15,
     "drop_bos": True,
@@ -74,13 +66,14 @@ class LossOutput(NamedTuple):
     l1_loss: torch.Tensor
     l0_loss: torch.Tensor
 
+
 class Crosscoder(nn.Module):
     def __init__(self, cfg, model):
         super().__init__()
         self.cfg = cfg
         self.model = model
-        self.modelcfg = self.model.config.to_dict() # type: ignore
-        
+        self.modelcfg = self.model.config.to_dict()  # type: ignore
+
         # Get context length based on model type
         if self.cfg["model_name"] == "gpt2":
             self.context = 1024
@@ -93,35 +86,39 @@ class Crosscoder(nn.Module):
         elif self.cfg["model_name"] == "gemma2-2b":
             self.context = 8192
         else:
-            self.context = 1024  # Default fallback
-        
-        # Get number of layers - try different config keys
-        if 'num_hidden_layers' in self.modelcfg:
-            self.num_layers = self.modelcfg['num_hidden_layers']
-        elif 'n_layer' in self.modelcfg:
-            self.num_layers = self.modelcfg['n_layer']
-        elif 'num_layers' in self.modelcfg:
-            self.num_layers = self.modelcfg['num_layers']
-        else:
-            raise ValueError(f"Could not find number of layers in model config. Available keys: {list(self.modelcfg.keys())}")
-        
-        # Get hidden/residual dimension - try different config keys
-        if 'hidden_size' in self.modelcfg:
-            self.resid_dim = self.modelcfg['hidden_size']
-        elif 'n_embd' in self.modelcfg:
-            self.resid_dim = self.modelcfg['n_embd']
-        elif 'd_model' in self.modelcfg:
-            self.resid_dim = self.modelcfg['d_model']
-        else:
-            raise ValueError(f"Could not find hidden dimension in model config. Available keys: {list(self.modelcfg.keys())}")
+            self.context = 1024
 
-        self.init_norm = cfg['dec_init_norm']
+        if "num_hidden_layers" in self.modelcfg:
+            self.num_layers = self.modelcfg["num_hidden_layers"]
+        elif "n_layer" in self.modelcfg:
+            self.num_layers = self.modelcfg["n_layer"]
+        elif "num_layers" in self.modelcfg:
+            self.num_layers = self.modelcfg["num_layers"]
+        else:
+            raise ValueError(
+                f"Could not find number of layers in model config. Available keys: {list(self.modelcfg.keys())}"
+            )
+
+        if "hidden_size" in self.modelcfg:
+            self.resid_dim = self.modelcfg["hidden_size"]
+        elif "n_embd" in self.modelcfg:
+            self.resid_dim = self.modelcfg["n_embd"]
+        elif "d_model" in self.modelcfg:
+            self.resid_dim = self.modelcfg["d_model"]
+        else:
+            raise ValueError(
+                f"Could not find hidden dimension in model config. Available keys: {list(self.modelcfg.keys())}"
+            )
+
+        self.init_norm = cfg["dec_init_norm"]
         self.seed = self.cfg["seed"]
         torch.manual_seed(self.seed)
         self.ae_dim = cfg["ae_dim"]
         self.dtype = cfg["dtype"]
         self.save_dir = None
-        self.threshold = nn.Parameter(torch.full((self.ae_dim,), 0.001, dtype=self.dtype))
+        self.threshold = nn.Parameter(
+            torch.full((self.ae_dim,), 0.001, dtype=self.dtype)
+        )
 
         # [layers, model resid dim (embd), crosscoder blowup dim]
         self.W_enc = nn.Parameter(
@@ -144,7 +141,6 @@ class Crosscoder(nn.Module):
         dec_init_norm = self.init_norm
         self.W_dec.data = self.W_dec.data * (dec_init_norm / self.W_dec.data.norm())
 
-
         enc_init_norm = self.init_norm
         self.W_enc.data = self.W_enc.data * (enc_init_norm / self.W_enc.data.norm())
 
@@ -157,9 +153,7 @@ class Crosscoder(nn.Module):
 
     def encode(self, x, apply_act=True):
         x_enc = einops.einsum(
-            x,
-            self.W_enc,
-            "... n_layers d_model, n_layers d_model ae_dim -> ... ae_dim"
+            x, self.W_enc, "... n_layers d_model, n_layers d_model ae_dim -> ... ae_dim"
         )
 
         if apply_act:
@@ -174,7 +168,7 @@ class Crosscoder(nn.Module):
         acts_dec = einops.einsum(
             acts,
             self.W_dec,
-            "... ae_dim, ae_dim n_layers d_model -> ... n_layers d_model"
+            "... ae_dim, ae_dim n_layers d_model -> ... n_layers d_model",
         )
 
         return acts_dec + self.b_dec
@@ -189,7 +183,9 @@ class Crosscoder(nn.Module):
 
         reconstructed_x = self.decode(acts)
         squared_diff = (reconstructed_x.float() - x.float()).pow(2)
-        l2_loss = (einops.reduce(squared_diff, "... n_layers d_model -> ...", "sum")).mean()
+        l2_loss = (
+            einops.reduce(squared_diff, "... n_layers d_model -> ...", "sum")
+        ).mean()
 
         decoder_norms = self.W_dec.norm(dim=-1)
         # decoder_norms: d_hidden n_layers
@@ -219,23 +215,26 @@ class Crosscoder(nn.Module):
             self.save_dir = SAVE_DIR / f"version_{version}"
             self.save_dir.mkdir(parents=True, exist_ok=True)
 
-        self.save_version = getattr(self, 'save_version', 0)
+        self.save_version = getattr(self, "save_version", 0)
 
         weight_path = self.save_dir / f"{self.save_version}.pt"
         cfg_path = self.save_dir / f"{self.save_version}_cfg.json"
 
-        torch.save({
-            'W_enc': self.W_enc.data,
-            'W_dec': self.W_dec.data,
-            'b_enc': self.b_enc.data,
-            'b_dec': self.b_dec.data,
-            'cfg': self.cfg
-        }, weight_path)
+        torch.save(
+            {
+                "W_enc": self.W_enc.data,
+                "W_dec": self.W_dec.data,
+                "b_enc": self.b_enc.data,
+                "b_dec": self.b_dec.data,
+                "cfg": self.cfg,
+            },
+            weight_path,
+        )
 
         cfg_to_save = self.cfg.copy()
-        cfg_to_save['dtype'] = str(cfg_to_save['dtype'])
+        cfg_to_save["dtype"] = str(cfg_to_save["dtype"])
 
-        with open(cfg_path, 'w') as f:
+        with open(cfg_path, "w") as f:
             json.dump(cfg_to_save, f, indent=2)
 
         self.save_version += 1
@@ -259,6 +258,7 @@ class JumpReLUFunction(autograd.Function):
         )
         return x_grad, threshold_grad, None  # None for bandwidth
 
+
 class RectangleFunction(autograd.Function):
     @staticmethod
     def forward(ctx, x):
@@ -274,10 +274,6 @@ class RectangleFunction(autograd.Function):
 
 
 class Buffer:
-    """
-    Data buffer - stores acts across all layers that can be used to train autoencoder.
-    Will run model to generate more when it gets halfway empty.
-    """
     def __init__(self, cfg, model):
         self.cfg = cfg
         self.model = model
@@ -292,27 +288,30 @@ class Buffer:
         elif self.cfg["model_name"] == "gemma2-2b":
             self.context = 8192
 
-        self.modelcfg = self.model.config.to_dict() # type: ignore
+        self.modelcfg = self.model.config.to_dict()  # type: ignore
 
         # Get number of layers - try different config keys
-        if 'num_hidden_layers' in self.modelcfg:
-            self.num_layers = self.modelcfg['num_hidden_layers']
-        elif 'n_layer' in self.modelcfg:
-            self.num_layers = self.modelcfg['n_layer']
-        elif 'num_layers' in self.modelcfg:
-            self.num_layers = self.modelcfg['num_layers']
+        if "num_hidden_layers" in self.modelcfg:
+            self.num_layers = self.modelcfg["num_hidden_layers"]
+        elif "n_layer" in self.modelcfg:
+            self.num_layers = self.modelcfg["n_layer"]
+        elif "num_layers" in self.modelcfg:
+            self.num_layers = self.modelcfg["num_layers"]
         else:
-            raise ValueError(f"Could not find number of layers in model config. Available keys: {list(self.modelcfg.keys())}")
-        
-        # Get hidden/residual dimension - try different config keys
-        if 'hidden_size' in self.modelcfg:
-            self.resid_dim = self.modelcfg['hidden_size']
-        elif 'n_embd' in self.modelcfg:
-            self.resid_dim = self.modelcfg['n_embd']
-        elif 'd_model' in self.modelcfg:
-            self.resid_dim = self.modelcfg['d_model']
+            raise ValueError(
+                f"Could not find number of layers in model config. Available keys: {list(self.modelcfg.keys())}"
+            )
+
+        if "hidden_size" in self.modelcfg:
+            self.resid_dim = self.modelcfg["hidden_size"]
+        elif "n_embd" in self.modelcfg:
+            self.resid_dim = self.modelcfg["n_embd"]
+        elif "d_model" in self.modelcfg:
+            self.resid_dim = self.modelcfg["d_model"]
         else:
-            raise ValueError(f"Could not find hidden dimension in model config. Available keys: {list(self.modelcfg.keys())}")
+            raise ValueError(
+                f"Could not find hidden dimension in model config. Available keys: {list(self.modelcfg.keys())}"
+            )
 
         self.buffer_size = self.cfg["batch_size"] * cfg["buffer_mult"]
         self.buffer_batches = self.buffer_size // (self.context - 1)
@@ -320,14 +319,19 @@ class Buffer:
 
         self.buffer = torch.zeros(
             (self.buffer_size, self.num_layers, self.resid_dim),
-            dtype = torch.bfloat16,
+            dtype=torch.bfloat16,
             requires_grad=False,
         ).to(cfg["device"])
         self.pointer = 0
         self.first = True
         self.normalize = True
 
-        self.dataset = load_dataset('monology/pile-uncopyrighted', split='train', streaming=True, cache_dir=str(DATASET_CACHE_DIR))
+        self.dataset = load_dataset(
+            "monology/pile-uncopyrighted",
+            split="train",
+            streaming=True,
+            cache_dir=str(DATASET_CACHE_DIR),
+        )
         self.dataset_iter = iter(self.dataset)
 
         estimated_norm_scaling_factors = self.estimate_norm_scaling_factor(batch_size=2)
@@ -340,17 +344,25 @@ class Buffer:
         self.refresh()
 
     @torch.no_grad()
-    def estimate_norm_scaling_factor(self, batch_size, n_batches_for_norm_estimate: int = 100):
+    def estimate_norm_scaling_factor(
+        self, batch_size, n_batches_for_norm_estimate: int = 100
+    ):
         norms_per_layer = [[] for _ in range(self.num_layers)]
 
-        token_generator = self.get_tokens_batch_generator(n_batches_for_norm_estimate, batch_size)
+        token_generator = self.get_tokens_batch_generator(
+            n_batches_for_norm_estimate, batch_size
+        )
 
-        for tokens in tqdm.tqdm(token_generator, total=n_batches_for_norm_estimate, desc="Estimating norm scaling factor"):
+        for tokens in tqdm.tqdm(
+            token_generator,
+            total=n_batches_for_norm_estimate,
+            desc="Estimating norm scaling factor",
+        ):
             tokens = tokens.to(self.cfg["device"])
 
             all_acts = []
             for j in range(0, len(tokens), self.cfg["model_batch_size"]):
-                batch_tokens = tokens[j:j + self.cfg["model_batch_size"]]
+                batch_tokens = tokens[j : j + self.cfg["model_batch_size"]]
 
                 with self.model.trace(batch_tokens) as tracer:
                     layer_outputs = []
@@ -369,7 +381,9 @@ class Buffer:
             acts = torch.cat(all_acts, dim=0)
             layer_norms = acts.norm(dim=-1)
             for layer_idx in range(self.num_layers):
-                norms_per_layer[layer_idx].append(layer_norms[:, layer_idx].mean().item())
+                norms_per_layer[layer_idx].append(
+                    layer_norms[:, layer_idx].mean().item()
+                )
 
         # ... (rest of the function is the same) ...
         scaling_factors = []
@@ -379,7 +393,6 @@ class Buffer:
             scaling_factors.append(scaling_factor)
 
         return scaling_factors
-
 
     def get_tokens_batch_generator(self, n_batches, batch_size):
         """
@@ -391,15 +404,14 @@ class Buffer:
             tokens = []
             count = 0
 
-            # Collect tokens for one batch
             while count < batch_size:
                 try:
                     item = next(self.dataset_iter)
                 except StopIteration:
-                    self.dataset_iter = iter(self.dataset) # Reset iterator
+                    self.dataset_iter = iter(self.dataset)
                     item = next(self.dataset_iter)
 
-                text = item['text']
+                text = item["text"]
                 if len(text.strip()) < 50:
                     continue
 
@@ -408,13 +420,11 @@ class Buffer:
                     return_tensors="pt",
                     max_length=self.context,
                     truncation=True,
-                    # Use 'max_length' to ensure consistent tensor shapes
-                    padding="max_length"
+                    padding="max_length",
                 )
                 tokens.append(token_ids)
                 count += 1
 
-            # Yield a single batch
             yield torch.cat(tokens, dim=0)
             batch_count += 1
 
@@ -425,12 +435,14 @@ class Buffer:
         self.buffer = torch.zeros(
             (self.buffer_size, self.num_layers, self.resid_dim),
             dtype=self.cfg["dtype"],
-            device=self.cfg["device"]
+            device=self.cfg["device"],
         )
 
         pointer = 0
         for i in range(0, len(tokens), self.cfg["model_batch_size"]):
-            batch_tokens = tokens[i:i + self.cfg["model_batch_size"]].to(self.cfg["device"])
+            batch_tokens = tokens[i : i + self.cfg["model_batch_size"]].to(
+                self.cfg["device"]
+            )
 
             with self.model.trace(batch_tokens) as tracer:
                 layer_outputs = []
@@ -438,7 +450,7 @@ class Buffer:
                     layer_out = get_layer_output(self.model, layer_idx, tracer)
                     layer_outputs.append(layer_out)
 
-            batch_acts = torch.stack(layer_outputs, dim=2).to(self.cfg["dtype"]) # Shape: (batch, seq, layers, dim)
+            batch_acts = torch.stack(layer_outputs, dim=2).to(self.cfg["dtype"])
 
             if self.cfg.get("drop_bos", True):
                 batch_acts = batch_acts[:, 1:, :, :]
@@ -463,7 +475,9 @@ class Buffer:
         if self.pointer + self.cfg["batch_size"] > len(self.buffer):
             self.refresh()
 
-        batch = self.buffer[self.pointer:self.pointer + self.cfg["batch_size"]].float()
+        batch = self.buffer[
+            self.pointer : self.pointer + self.cfg["batch_size"]
+        ].float()
         self.pointer += self.cfg["batch_size"]
 
         if self.normalize:
@@ -483,7 +497,7 @@ class Buffer:
                 if count >= max_samples:
                     break
 
-                text = item['text']
+                text = item["text"]
 
                 if len(text.strip()) < 50:
                     continue
@@ -493,7 +507,7 @@ class Buffer:
                     return_tensors="pt",
                     max_length=self.context,
                     truncation=True,
-                    padding="max_length"
+                    padding="max_length",
                 )
                 tokens.append(token_ids)
                 count += 1
@@ -503,7 +517,7 @@ class Buffer:
                 if count >= max_samples:
                     break
 
-                text = item['text']
+                text = item["text"]
 
                 if len(text.strip()) < 50:
                     continue
@@ -513,11 +527,12 @@ class Buffer:
                     return_tensors="pt",
                     max_length=self.context,
                     truncation=True,
-                    padding="max_length"
+                    padding="max_length",
                 )
                 tokens.append(token_ids)
                 count += 1
         return torch.cat(tokens, dim=0)
+
 
 class Trainer:
     def __init__(self, cfg, use_wandb=True):
@@ -526,13 +541,19 @@ class Trainer:
             self.model = nnsight.LanguageModel("gpt2", device_map="auto")
             self.context = 1024
         elif self.cfg["model_name"] == "pythia":
-            self.model = nnsight.LanguageModel("EleutherAI/pythia-2.8b-deduped", device_map="auto")
+            self.model = nnsight.LanguageModel(
+                "EleutherAI/pythia-2.8b-deduped", device_map="auto"
+            )
             self.context = 2048
         elif self.cfg["model_name"] == "gemma3-4b":
-            self.model = nnsight.LanguageModel("google/gemma-2-9b", device_map="auto")  # Using gemma-2-9b as closest match
+            self.model = nnsight.LanguageModel(
+                "google/gemma-2-9b", device_map="auto"
+            )  # Using gemma-2-9b as closest match
             self.context = 8192
         elif self.cfg["model_name"] == "qwen3-4b":
-            self.model = nnsight.LanguageModel("Qwen/Qwen2.5-3B", device_map="auto")  # Using Qwen2.5-3B as closest match
+            self.model = nnsight.LanguageModel(
+                "Qwen/Qwen2.5-3B", device_map="auto"
+            )  # Using Qwen2.5-3B as closest match
             self.context = 32768
         elif self.cfg["model_name"] == "gemma2-2b":
             self.model = nnsight.LanguageModel("google/gemma-2-2b", device_map="auto")
@@ -544,10 +565,17 @@ class Trainer:
         self.use_wandb = use_wandb
 
         if cfg.get("optimizer", "adamw") == "sophia":
-            self.optimizer = SophiaG(self.crosscoder.parameters(), lr=2e-4, betas=(0.965, 0.99), rho=0.01, weight_decay=1e-1)
+            self.optimizer = SophiaG(
+                self.crosscoder.parameters(),
+                lr=2e-4,
+                betas=(0.965, 0.99),
+                rho=0.01,
+                weight_decay=1e-1,
+            )
         else:
             self.optimizer = torch.optim.AdamW(
-                self.crosscoder.parameters(), lr=cfg["lr"],
+                self.crosscoder.parameters(),
+                lr=cfg["lr"],
                 betas=(cfg["beta1"], cfg["beta2"]),
             )
 
@@ -557,14 +585,13 @@ class Trainer:
 
         self.step_counter: int = 0
 
-
         if use_wandb:
             WANDB_DIR.mkdir(exist_ok=True)
             wandb.init(
                 project="crosscroders",
                 entity="rohan-kathuria-neu",
                 config=cfg,
-                dir=str(WANDB_DIR)
+                dir=str(WANDB_DIR),
             )
 
     def lr_lambda(self, step):
@@ -577,16 +604,19 @@ class Trainer:
 
     def get_l1_coeff(self):
         if self.step_counter < 0.04 * self.total_steps:
-            return self.cfg["l1_coefficient"] * self.step_counter / (0.04 * self.total_steps)
+            return (
+                self.cfg["l1_coefficient"]
+                * self.step_counter
+                / (0.04 * self.total_steps)
+            )
         else:
             return self.cfg["l1_coefficient"]
-
 
     def step(self):
         acts = self.buffer.next()
         acts = acts.to(dtype=self.cfg["dtype"], device=self.cfg["device"])
 
-        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             losses = self.crosscoder.return_loss(acts)
             loss = losses.l2_loss + self.get_l1_coeff() * losses.l1_loss
 
@@ -605,7 +635,7 @@ class Trainer:
                     param_count += 1
 
             if param_count > 0:
-                total_norm = total_norm ** (1. / 2)
+                total_norm = total_norm ** (1.0 / 2)
                 grad_norm = total_norm
 
                 if total_norm > max_norm:
@@ -633,7 +663,7 @@ class Trainer:
             "lr": self.scheduler.get_last_lr()[0],
             "grad_norm": grad_norm,
             "sparsity": (encoded_acts > 0).float().mean().item(),
-            "reconstruction_mse": losses.l2_loss.item() / acts.numel()
+            "reconstruction_mse": losses.l2_loss.item() / acts.numel(),
         }
 
         self.step_counter += 1
@@ -646,7 +676,6 @@ class Trainer:
     def save(self):
         self.crosscoder.save()
 
-
     def train(self):
         self.step_counter = 0
         try:
@@ -655,52 +684,59 @@ class Trainer:
                 if i % self.cfg["log_interval"] == 0:
                     self.log(loss_dict)
                 if (i + 1) % self.cfg["save_interval"] == 0:
-                    print(f"Saving checkpoint at step {i+1}")
+                    print(f"Saving checkpoint at step {i + 1}")
                     self.save()
 
                 if i % (self.cfg["log_interval"] * 10) == 0 and i > 0:
                     try:
                         analysis = self.analyze()
                         if self.use_wandb:
-                            wandb.log({
-                                'feature_analysis/mean_sparsity': analysis['mean_sparsity'],
-                                'feature_analysis/sparsity_std': analysis['sparsity_std'],
-                                'feature_analysis/dead_features': analysis['dead_features'],
-                                'feature_analysis/max_layer_error': max(analysis['layer_reconstruction_errors'])
-                            }, step=self.step_counter)
+                            wandb.log(
+                                {
+                                    "feature_analysis/mean_sparsity": analysis[
+                                        "mean_sparsity"
+                                    ],
+                                    "feature_analysis/sparsity_std": analysis[
+                                        "sparsity_std"
+                                    ],
+                                    "feature_analysis/dead_features": analysis[
+                                        "dead_features"
+                                    ],
+                                    "feature_analysis/max_layer_error": max(
+                                        analysis["layer_reconstruction_errors"]
+                                    ),
+                                },
+                                step=self.step_counter,
+                            )
                     except Exception as e:
-                        print(f"  Feature analysis failed: {e}")
+                        print(f"Failed: {e}")
 
         finally:
             self.save()
 
     def analyze(self, n_samples=1000):
-        """Analyze the quality of learned features during training"""
         sample_acts = self.buffer.next()[:n_samples]
         sample_acts = sample_acts.to(dtype=self.cfg["dtype"], device=self.cfg["device"])
 
         with torch.no_grad():
             encoded = self.crosscoder.encode(sample_acts)
-
-            feature_means = encoded.mean(dim=0)
-            feature_stds = encoded.std(dim=0)
             feature_sparsity = (encoded > 0).float().mean(dim=0)
 
             most_active = torch.argsort(feature_sparsity, descending=True)[:10]
             least_active = torch.argsort(feature_sparsity, descending=False)[:10]
 
             reconstructed = self.crosscoder.decode(encoded)
-            recon_error = F.mse_loss(reconstructed, sample_acts, reduction='none')
-            layer_recon_error = recon_error.mean(dim=[0, 2])  # Average over batch and d_model
+            recon_error = F.mse_loss(reconstructed, sample_acts, reduction="none")
+            layer_recon_error = recon_error.mean(dim=[0, 2])
 
             analysis = {
-                'mean_sparsity': feature_sparsity.mean().item(),
-                'sparsity_std': feature_sparsity.std().item(),
-                'most_active_features': most_active.tolist(),
-                'least_active_features': least_active.tolist(),
-                'layer_reconstruction_errors': layer_recon_error.tolist(),
-                'dead_features': (feature_sparsity < 1e-6).sum().item(),
-                'total_features': len(feature_sparsity)
+                "mean_sparsity": feature_sparsity.mean().item(),
+                "sparsity_std": feature_sparsity.std().item(),
+                "most_active_features": most_active.tolist(),
+                "least_active_features": least_active.tolist(),
+                "layer_reconstruction_errors": layer_recon_error.tolist(),
+                "dead_features": (feature_sparsity < 1e-6).sum().item(),
+                "total_features": len(feature_sparsity),
             }
 
             return analysis
