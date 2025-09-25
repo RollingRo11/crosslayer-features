@@ -14,7 +14,6 @@ from tqdm import tqdm
 import einops
 import argparse
 import random
-from sophia import SophiaG
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sae_vis"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

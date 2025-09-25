@@ -362,31 +362,43 @@ def parse_feature_data(
             # Compute L2 norm for each layer to get the feature norm trajectory
             # Convert to float32 to avoid BFloat16 issues with torch.norm on CPU
             decoder_weights_float = decoder_weights.float()
-            decoder_norms = torch.norm(decoder_weights_float, dim=1).cpu().numpy().tolist()
+            decoder_norms_array = torch.norm(decoder_weights_float, dim=1).cpu().numpy()
 
-            # Create a single trajectory showing decoder norms across layers
-            trajectories = [decoder_norms]  # Single trajectory for decoder norms
-
-            # Normalize trajectory to [0, 1] if requested
-            if trajectory_cfg.normalize and len(decoder_norms) > 0:
-                norms_tensor = torch.tensor(decoder_norms)
-                norm_min, norm_max = norms_tensor.min(), norms_tensor.max()
-                if norm_max > norm_min:
-                    normalized_norms = (norms_tensor - norm_min) / (norm_max - norm_min)
-                    trajectories = [normalized_norms.tolist()]
-                    mean_trajectory = normalized_norms.tolist()
-                else:
-                    # All norms are the same, set to 0.5 for normalized view
-                    trajectories = [[0.5] * n_layers]
-                    mean_trajectory = [0.5] * n_layers
+            # Compute relative importance to better indicate cross-layer superposition
+            total_norm = np.linalg.norm(decoder_norms_array)
+            if total_norm > 0:
+                relative_norms = (decoder_norms_array / total_norm)
+                # Calculate cross-layer metrics
+                # Count layers with significant contribution (>5% of total norm)
+                significant_layers = np.sum(relative_norms > 0.05)
+                # Calculate entropy as measure of spread (higher = more cross-layer)
+                norm_probs = decoder_norms_array / (decoder_norms_array.sum() + 1e-8)
+                entropy = -np.sum(norm_probs * np.log(norm_probs + 1e-8))
+                max_entropy = np.log(n_layers)
+                normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
             else:
-                mean_trajectory = decoder_norms
+                relative_norms = decoder_norms_array
+                significant_layers = 0
+                normalized_entropy = 0
+
+            # Use relative norms for normalized view, absolute for non-normalized
+            if trajectory_cfg.normalize:
+                # Show relative importance (sums to 1)
+                trajectories = [relative_norms.tolist()]
+                mean_trajectory = relative_norms.tolist()
+            else:
+                # Show absolute norms
+                trajectories = [decoder_norms_array.tolist()]
+                mean_trajectory = decoder_norms_array.tolist()
 
             # Find peak layer (layer with highest norm)
-            peak_layer = int(np.argmax(decoder_norms)) if decoder_norms else 0
+            peak_layer = int(np.argmax(decoder_norms_array)) if len(decoder_norms_array) > 0 else 0
 
-            # Label as decoder norms rather than token sequences
-            sequence_labels = ["Feature norm"]
+            # Label with cross-layer metrics to help identify cross-layer superposition
+            if trajectory_cfg.normalize:
+                sequence_labels = [f"Relative norm (active layers: {significant_layers}/{n_layers}, entropy: {normalized_entropy:.2f})"]
+            else:
+                sequence_labels = [f"Absolute norm (active layers: {significant_layers}/{n_layers})"]
 
             cross_layer_trajectory_data.append(CrossLayerTrajectoryData(
                 layers=list(range(n_layers)),

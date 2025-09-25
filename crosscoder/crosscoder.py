@@ -12,7 +12,6 @@ import json
 import numpy as np
 from datasets import load_dataset
 from torch.nn.utils import clip_grad_norm_
-from sophia import SophiaG
 import sys
 from pathlib import Path
 import os
@@ -183,9 +182,9 @@ class Crosscoder(nn.Module):
 
         reconstructed_x = self.decode(acts)
         squared_diff = (reconstructed_x.float() - x.float()).pow(2)
-        l2_loss = (
-            einops.reduce(squared_diff, "... n_layers d_model -> ...", "sum")
-        ).mean()
+
+        per_layer_losses = squared_diff.mean(dim=-1)
+        l2_loss = per_layer_losses.mean()
 
         decoder_norms = self.W_dec.norm(dim=-1)
         # decoder_norms: d_hidden n_layers
@@ -256,7 +255,7 @@ class JumpReLUFunction(autograd.Function):
             * RectangleFunction.apply((x - threshold) / bandwidth)
             * grad_output
         )
-        return x_grad, threshold_grad, None  # None for bandwidth
+        return x_grad, threshold_grad, None
 
 
 class RectangleFunction(autograd.Function):
@@ -385,7 +384,6 @@ class Buffer:
                     layer_norms[:, layer_idx].mean().item()
                 )
 
-        # ... (rest of the function is the same) ...
         scaling_factors = []
         for layer_idx in range(self.num_layers):
             mean_norm = np.mean(norms_per_layer[layer_idx])
@@ -481,7 +479,12 @@ class Buffer:
         self.pointer += self.cfg["batch_size"]
 
         if self.normalize:
-            batch = batch * self.normalisation_factor[None, :, None]
+            eps = 1e-6
+            for layer_idx in range(self.num_layers):
+                layer_acts = batch[:, layer_idx, :]
+                batch[:, layer_idx, :] = (
+                    layer_acts - layer_acts.mean(dim=-1, keepdim=True)
+                ) / (layer_acts.std(dim=-1, keepdim=True) + eps)
 
         return batch.to(self.cfg["device"])
 
@@ -546,14 +549,10 @@ class Trainer:
             )
             self.context = 2048
         elif self.cfg["model_name"] == "gemma3-4b":
-            self.model = nnsight.LanguageModel(
-                "google/gemma-2-9b", device_map="auto"
-            )  # Using gemma-2-9b as closest match
+            self.model = nnsight.LanguageModel("google/gemma-2-9b", device_map="auto")
             self.context = 8192
         elif self.cfg["model_name"] == "qwen3-4b":
-            self.model = nnsight.LanguageModel(
-                "Qwen/Qwen2.5-3B", device_map="auto"
-            )  # Using Qwen2.5-3B as closest match
+            self.model = nnsight.LanguageModel("Qwen/Qwen2.5-3B", device_map="auto")
             self.context = 32768
         elif self.cfg["model_name"] == "gemma2-2b":
             self.model = nnsight.LanguageModel("google/gemma-2-2b", device_map="auto")
@@ -564,20 +563,11 @@ class Trainer:
         self.total_steps = cfg["total_steps"]
         self.use_wandb = use_wandb
 
-        if cfg.get("optimizer", "adamw") == "sophia":
-            self.optimizer = SophiaG(
-                self.crosscoder.parameters(),
-                lr=2e-4,
-                betas=(0.965, 0.99),
-                rho=0.01,
-                weight_decay=1e-1,
-            )
-        else:
-            self.optimizer = torch.optim.AdamW(
-                self.crosscoder.parameters(),
-                lr=cfg["lr"],
-                betas=(cfg["beta1"], cfg["beta2"]),
-            )
+        self.optimizer = torch.optim.AdamW(
+            self.crosscoder.parameters(),
+            lr=cfg["lr"],
+            betas=(cfg["beta1"], cfg["beta2"]),
+        )
 
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer, self.lr_lambda
@@ -644,7 +634,7 @@ class Trainer:
                         if param.grad is not None:
                             param.grad.data.mul_(clip_coef)
         except Exception as e:
-            print(f"Gradient clipping failed: {e}, continuing without clipping")
+            print(f"Gradient clipping failed: {e}")
             grad_norm = 0.0
 
         self.optimizer.step()
