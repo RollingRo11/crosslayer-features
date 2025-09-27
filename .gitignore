@@ -45,6 +45,9 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+# Local cache directories for UV and Hugging Face
+.cache/uv/
+.cache/huggingface/
 nosetests.xml
 coverage.xml
 *.cover
@@ -131,6 +134,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env.local
 .venv
 env/
 venv/

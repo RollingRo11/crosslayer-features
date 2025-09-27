@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import nnsight
 from nnsight import LanguageModel
 import wandb
 import einops
@@ -13,42 +12,61 @@ import numpy as np
 from datasets import load_dataset
 from torch.nn.utils import clip_grad_norm_
 import sys
-from pathlib import Path
-import os
 import torch.autograd as autograd
 
 sys.path.append(str(Path(__file__).parent.parent / "sae_vis" / "sae_vis"))
 from model_utils import get_layer_output
 
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-os.environ["TORCH_USE_CUDA_DSA"] = "1"
-
 PROJECT_ROOT = Path(__file__).parent.parent
 DATASET_CACHE_DIR = PROJECT_ROOT / "data" / "hf_datasets_cache"
 DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+
+class LossOutput(NamedTuple):
+    reconstruction_loss: torch.Tensor  # L2 Loss
+    sparsity_loss: torch.Tensor  # L_S (tanh loss)
+    pre_act_loss: torch.Tensor  # L_P (dead feature loss)
+
+
+def print_gpu_memory(tag=""):
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated(0) / (1024**3)
+        reserved = torch.cuda.memory_reserved(0) / (1024**3)
+        free, total = torch.cuda.mem_get_info(0)
+        used = (total - free) / (1024**3)
+        total_gb = total / (1024**3)
+
+        print(f"--- GPU Memory {tag} ---")
+        print(f"  - Allocated by Tensors: {allocated:.2f} GB")
+        print(f"  - Reserved by PyTorch:  {reserved:.2f} GB")
+        print(f"  - Total GPU Usage:      {used:.2f} GB / {total_gb:.2f} GB")
+        print("--------------------------")
+
+
 cc_config = {
-    "seed": 11112005,
+    "seed": 11,
     "batch_size": 2048,
-    "buffer_mult": 16,
+    "buffer_mult": 24,
     "lr": 2e-5,
     "num_tokens": int(4e8),
-    "l1_coefficient": 1.5,
     "beta1": 0.9,
     "beta2": 0.999,
-    "context": 512,
+    "context": 4096,
     "device": "cuda",
-    "model_batch_size": 16,
+    "model_batch_size": 8,
     "log_interval": 100,
     "save_interval": 50000,
-    "model_name": "pythia",  # gpt2, pythia, gemma3-4b, qwen3-4b, gemma2-2b
+    "model_name": "gemma2-2b",  # gpt2, pythia, gemma3-4b, qwen3-4b, gemma2-2b
     "dtype": torch.bfloat16,
     "ae_dim": 2**15,
     "drop_bos": True,
     "total_steps": 100000,
     "normalization": "layer_wise",
     "optimizer": "adamw",
-    "dec_init_norm": 0.07,
+    "dec_init_norm": 0.003,
+    "l_s_coefficient": 10,
+    "l_p_coefficient": 3e-6,
+    "c": 4.0,
 }
 
 CROSSCODER_DIR = Path(__file__).parent
@@ -60,32 +78,13 @@ WANDB_DIR = CROSSCODER_DIR / "wandb"
 # dec of d_sae, n_layers, d_model
 # loss func (we gonna use L1 of norms)
 # d_sae could be anyting
-class LossOutput(NamedTuple):
-    l2_loss: torch.Tensor
-    l1_loss: torch.Tensor
-    l0_loss: torch.Tensor
-
-
 class Crosscoder(nn.Module):
     def __init__(self, cfg, model):
         super().__init__()
         self.cfg = cfg
         self.model = model
         self.modelcfg = self.model.config.to_dict()  # type: ignore
-
-        # Get context length based on model type
-        if self.cfg["model_name"] == "gpt2":
-            self.context = 1024
-        elif self.cfg["model_name"] == "pythia":
-            self.context = 2048
-        elif self.cfg["model_name"] == "gemma3-4b":
-            self.context = 8192
-        elif self.cfg["model_name"] == "qwen3-4b":
-            self.context = 32768
-        elif self.cfg["model_name"] == "gemma2-2b":
-            self.context = 8192
-        else:
-            self.context = 1024
+        self.context = self.cfg["context"]
 
         if "num_hidden_layers" in self.modelcfg:
             self.num_layers = self.modelcfg["num_hidden_layers"]
@@ -118,17 +117,12 @@ class Crosscoder(nn.Module):
         self.threshold = nn.Parameter(
             torch.full((self.ae_dim,), 0.001, dtype=self.dtype)
         )
+        dec_init_norm = self.init_norm
 
-        # [layers, model resid dim (embd), crosscoder blowup dim]
         self.W_enc = nn.Parameter(
-            torch.nn.init.normal_(
-                torch.empty(
-                    self.num_layers, self.resid_dim, self.ae_dim, dtype=self.dtype
-                )
-            )
+            torch.empty(self.num_layers, self.resid_dim, self.ae_dim, dtype=self.dtype)
         )
 
-        # [crosscoder dim, layers, model resid dim (embd)]
         self.W_dec = nn.Parameter(
             torch.nn.init.normal_(
                 torch.empty(
@@ -137,11 +131,14 @@ class Crosscoder(nn.Module):
             )
         )
 
-        dec_init_norm = self.init_norm
-        self.W_dec.data = self.W_dec.data * (dec_init_norm / self.W_dec.data.norm())
+        self.W_dec.data = self.W_dec.data * (
+            dec_init_norm / self.W_dec.data.norm(dim=-1, keepdim=True)
+        )
 
-        enc_init_norm = self.init_norm
-        self.W_enc.data = self.W_enc.data * (enc_init_norm / self.W_enc.data.norm())
+        self.W_enc.data = einops.rearrange(
+            self.W_dec.data.clone(),
+            "ae_dim n_layers d_model -> n_layers d_model ae_dim",
+        )
 
         self.b_enc = nn.Parameter(torch.zeros(self.ae_dim, dtype=self.dtype))
         self.b_dec = nn.Parameter(
@@ -150,18 +147,24 @@ class Crosscoder(nn.Module):
 
         self.to(cfg["device"])
 
-    def encode(self, x, apply_act=True):
+    def encode(self, x):
+        if self.W_enc is None:
+            w_enc_t = einops.rearrange(
+                self.W_dec, "ae_dim n_layers d_model -> n_layers d_model ae_dim"
+            )
+        else:
+            w_enc_t = self.W_enc
+
         x_enc = einops.einsum(
-            x, self.W_enc, "... n_layers d_model, n_layers d_model ae_dim -> ... ae_dim"
+            x,
+            w_enc_t,
+            "... n_layers d_model, n_layers d_model ae_dim -> ... ae_dim",
         )
 
-        if apply_act:
-            preacts = x_enc + self.b_enc
-            acts = JumpReLUFunction.apply(preacts, self.threshold, 0.1)
-        else:
-            acts = x_enc + self.b_enc
+        preacts = x_enc + self.b_enc
+        acts = JumpReLUFunction.apply(preacts, self.threshold, 0.1)
 
-        return acts
+        return preacts, acts
 
     def decode(self, acts):
         acts_dec = einops.einsum(
@@ -178,29 +181,37 @@ class Crosscoder(nn.Module):
 
     def return_loss(self, x):
         x = x.to(self.dtype).to(self.cfg["device"])
-        acts = self.encode(x)
+
+        preacts, acts = self.encode(x)
 
         reconstructed_x = self.decode(acts)
+
         squared_diff = (reconstructed_x.float() - x.float()).pow(2)
+        reconstruction_loss = einops.reduce(
+            squared_diff, "batch n_layers d_model -> batch", "sum"
+        ).mean()
 
-        per_layer_losses = squared_diff.mean(dim=-1)
-        l2_loss = per_layer_losses.mean()
-
-        decoder_norms = self.W_dec.norm(dim=-1)
-        # decoder_norms: d_hidden n_layers
-        total_decoder_norm = einops.reduce(
-            decoder_norms, "d_hidden n_layers -> d_hidden", "sum"
+        decoder_norms_per_layer = self.W_dec.norm(dim=-1)  # Shape: (ae_dim, num_layers)
+        decoder_norms = einops.reduce(
+            decoder_norms_per_layer, "ae_dim n_layers -> ae_dim", "sum"
         )
 
-        l1_loss = (acts * total_decoder_norm[None, :]).sum(-1).mean(0)
+        c = self.cfg["c"]
+        sparsity_term = torch.tanh(c * torch.abs(acts) * decoder_norms)
+        sparsity_loss = sparsity_term.sum(dim=-1).mean()
 
-        l0_loss = (acts > 0).float().sum(-1).mean()
+        relu_term = F.relu(self.threshold - preacts)
+        pre_act_loss_term = relu_term * decoder_norms
+        pre_act_loss = pre_act_loss_term.sum(dim=-1).mean()
 
-        return LossOutput(l2_loss=l2_loss, l1_loss=l1_loss, l0_loss=l0_loss)
+        return LossOutput(
+            reconstruction_loss=reconstruction_loss,
+            sparsity_loss=sparsity_loss,
+            pre_act_loss=pre_act_loss,
+        )
 
     def save(self):
         if self.save_dir is None:
-            # Ensure save directory exists
             SAVE_DIR.mkdir(parents=True, exist_ok=True)
             version_list = [
                 int(file.name.split("_")[1])
@@ -251,7 +262,7 @@ class JumpReLUFunction(autograd.Function):
         bandwidth = bandwidth_tensor.item()
         x_grad = (x > threshold).float() * grad_output
         threshold_grad = (
-            -(threshold / bandwidth)
+            -(1.0 / bandwidth)
             * RectangleFunction.apply((x - threshold) / bandwidth)
             * grad_output
         )
@@ -276,20 +287,9 @@ class Buffer:
     def __init__(self, cfg, model):
         self.cfg = cfg
         self.model = model
-        if self.cfg["model_name"] == "gpt2":
-            self.context = 1024
-        elif self.cfg["model_name"] == "pythia":
-            self.context = 2048
-        elif self.cfg["model_name"] == "gemma3-4b":
-            self.context = 8192
-        elif self.cfg["model_name"] == "qwen3-4b":
-            self.context = 32768
-        elif self.cfg["model_name"] == "gemma2-2b":
-            self.context = 8192
-
+        self.context = self.cfg["context"]
         self.modelcfg = self.model.config.to_dict()  # type: ignore
 
-        # Get number of layers - try different config keys
         if "num_hidden_layers" in self.modelcfg:
             self.num_layers = self.modelcfg["num_hidden_layers"]
         elif "n_layer" in self.modelcfg:
@@ -387,7 +387,7 @@ class Buffer:
         scaling_factors = []
         for layer_idx in range(self.num_layers):
             mean_norm = np.mean(norms_per_layer[layer_idx])
-            scaling_factor = np.sqrt(self.resid_dim) / mean_norm
+            scaling_factor = mean_norm / np.sqrt(self.resid_dim)
             scaling_factors.append(scaling_factor)
 
         return scaling_factors
@@ -426,47 +426,51 @@ class Buffer:
             yield torch.cat(tokens, dim=0)
             batch_count += 1
 
+    # In the Buffer class
+
     @torch.no_grad()
     def refresh(self):
         tokens = self.get_tokens_batch()
-
-        self.buffer = torch.zeros(
-            (self.buffer_size, self.num_layers, self.resid_dim),
-            dtype=self.cfg["dtype"],
-            device=self.cfg["device"],
-        )
-
+        self.buffer.zero_()
         pointer = 0
-        for i in range(0, len(tokens), self.cfg["model_batch_size"]):
+
+        for i in tqdm.tqdm(
+            range(0, len(tokens), self.cfg["model_batch_size"]),
+            desc="Refreshing Buffer",
+        ):
             batch_tokens = tokens[i : i + self.cfg["model_batch_size"]].to(
                 self.cfg["device"]
             )
 
-            with self.model.trace(batch_tokens) as tracer:
-                layer_outputs = []
-                for layer_idx in range(self.num_layers):
-                    layer_out = get_layer_output(self.model, layer_idx, tracer)
-                    layer_outputs.append(layer_out)
-
-            batch_acts = torch.stack(layer_outputs, dim=2).to(self.cfg["dtype"])
-
             if self.cfg.get("drop_bos", True):
-                batch_acts = batch_acts[:, 1:, :, :]
-
-            batch_acts = batch_acts.reshape(-1, self.num_layers, self.resid_dim)
-            num_tokens_in_batch = batch_acts.shape[0]
+                num_tokens_in_batch = batch_tokens.shape[0] * (
+                    batch_tokens.shape[1] - 1
+                )
+            else:
+                num_tokens_in_batch = batch_tokens.shape[0] * batch_tokens.shape[1]
 
             if pointer + num_tokens_in_batch > self.buffer_size:
-                remaining_space = self.buffer_size - pointer
-                self.buffer[pointer:] = batch_acts[:remaining_space]
                 break
-            else:
-                self.buffer[pointer : pointer + num_tokens_in_batch] = batch_acts
-                pointer += num_tokens_in_batch
 
-        perm = torch.randperm(len(self.buffer), device=self.cfg["device"])
-        self.buffer = self.buffer[perm]
+            with self.model.trace(batch_tokens) as tracer:
+                for layer_idx in range(self.num_layers):
+                    layer_out = get_layer_output(self.model, layer_idx, tracer)
+
+                    if self.cfg.get("drop_bos", True):
+                        layer_out = layer_out[:, 1:, :]
+
+                    reshaped_layer_out = layer_out.reshape(-1, self.resid_dim)
+
+                    self.buffer[
+                        pointer : pointer + num_tokens_in_batch, layer_idx, :
+                    ] = reshaped_layer_out.to(self.cfg["dtype"])
+
+            pointer += num_tokens_in_batch
+
+        perm = torch.randperm(pointer, device=self.cfg["device"])
+        self.buffer[:pointer] = self.buffer[:pointer][perm]
         self.pointer = 0
+        torch.cuda.empty_cache()
 
     @torch.no_grad()
     def next(self):
@@ -479,91 +483,62 @@ class Buffer:
         self.pointer += self.cfg["batch_size"]
 
         if self.normalize:
-            eps = 1e-6
-            for layer_idx in range(self.num_layers):
-                layer_acts = batch[:, layer_idx, :]
-                batch[:, layer_idx, :] = (
-                    layer_acts - layer_acts.mean(dim=-1, keepdim=True)
-                ) / (layer_acts.std(dim=-1, keepdim=True) + eps)
+            batch = batch / self.normalisation_factor[None, :, None]
 
         return batch.to(self.cfg["device"])
 
     def get_tokens_batch(self):
-        """Get a batch of tokenized text data"""
-
         tokens = []
         count = 0
         max_samples = self.buffer_batches
 
-        try:
-            for item in self.dataset_iter:
-                if count >= max_samples:
-                    break
+        while count < max_samples:
+            try:
+                item = next(self.dataset_iter)
+            except StopIteration:
+                self.dataset_iter = iter(self.dataset)
+                continue  # Skip to the next iteration to get an item
 
-                text = item["text"]
+            text = item["text"]
+            if len(text.strip()) < 50:
+                continue
 
-                if len(text.strip()) < 50:
-                    continue
+            token_ids = self.model.tokenizer.encode(
+                text,
+                return_tensors="pt",
+                max_length=self.context,
+                truncation=True,
+                padding="max_length",
+            )
+            tokens.append(token_ids)
+            count += 1
 
-                token_ids = self.model.tokenizer.encode(
-                    text,
-                    return_tensors="pt",
-                    max_length=self.context,
-                    truncation=True,
-                    padding="max_length",
-                )
-                tokens.append(token_ids)
-                count += 1
-        except StopIteration:
-            self.dataset_iter = iter(self.dataset)
-            for item in self.dataset_iter:
-                if count >= max_samples:
-                    break
-
-                text = item["text"]
-
-                if len(text.strip()) < 50:
-                    continue
-
-                token_ids = self.model.tokenizer.encode(
-                    text,
-                    return_tensors="pt",
-                    max_length=self.context,
-                    truncation=True,
-                    padding="max_length",
-                )
-                tokens.append(token_ids)
-                count += 1
-        return torch.cat(tokens, dim=0)
+        return torch.cat(tokens, dim=0) if tokens else torch.empty(0)
 
 
 class Trainer:
     def __init__(self, cfg, use_wandb=True):
         self.cfg = cfg
         if self.cfg["model_name"] == "gpt2":
-            self.model = nnsight.LanguageModel("gpt2", device_map="auto")
-            self.context = 1024
+            self.model = LanguageModel("gpt2", device_map="auto")
         elif self.cfg["model_name"] == "pythia":
-            self.model = nnsight.LanguageModel(
+            self.model = LanguageModel(
                 "EleutherAI/pythia-2.8b-deduped", device_map="auto"
             )
-            self.context = 2048
         elif self.cfg["model_name"] == "gemma3-4b":
-            self.model = nnsight.LanguageModel("google/gemma-2-9b", device_map="auto")
-            self.context = 8192
+            self.model = LanguageModel("google/gemma-2-9b", device_map="auto")
         elif self.cfg["model_name"] == "qwen3-4b":
-            self.model = nnsight.LanguageModel("Qwen/Qwen2.5-3B", device_map="auto")
-            self.context = 32768
+            self.model = LanguageModel("Qwen/Qwen2.5-3B", device_map="auto")
         elif self.cfg["model_name"] == "gemma2-2b":
-            self.model = nnsight.LanguageModel("google/gemma-2-2b", device_map="auto")
-            self.context = 8192
+            self.model = LanguageModel("google/gemma-2-2b", device_map="auto")
 
+        self.context = self.cfg["context"]
         self.crosscoder = Crosscoder(cfg, model=self.model)
         self.buffer = Buffer(cfg, model=self.model)
         self.total_steps = cfg["total_steps"]
         self.use_wandb = use_wandb
 
-        self.optimizer = torch.optim.AdamW(
+        self.optimizer = torch.optim.Adam(
             self.crosscoder.parameters(),
             lr=cfg["lr"],
             betas=(cfg["beta1"], cfg["beta2"]),
@@ -593,67 +568,66 @@ class Trainer:
             return 1.0 - (step - 0.8 * self.total_steps) / (0.2 * self.total_steps)
 
     def get_l1_coeff(self):
-        if self.step_counter < 0.04 * self.total_steps:
+        return self.cfg["l_s_coefficient"] * self.step_counter / self.total_steps
+
+    def get_l0_coeff(self):
+        if self.step_counter < 0.05 * self.total_steps:
             return (
-                self.cfg["l1_coefficient"]
+                self.cfg["l0_coefficient"]
                 * self.step_counter
                 / (0.04 * self.total_steps)
             )
         else:
-            return self.cfg["l1_coefficient"]
+            return self.cfg["l0_coefficient"]
 
     def step(self):
         acts = self.buffer.next()
         acts = acts.to(dtype=self.cfg["dtype"], device=self.cfg["device"])
 
+        lambda_s = self.get_l1_coeff()
+        lambda_p = self.cfg["l_p_coefficient"]
+
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             losses = self.crosscoder.return_loss(acts)
-            loss = losses.l2_loss + self.get_l1_coeff() * losses.l1_loss
+
+            loss = (
+                losses.reconstruction_loss
+                + (lambda_s * losses.sparsity_loss)
+                + (lambda_p * losses.pre_act_loss)
+            )
 
         loss.backward()
-
-        # manually clip bcs torch grad_clip_norm_ cooked gpu vram (this is probably user error)
-        grad_norm = 0.0
-        max_norm = 1.0
-        try:
-            total_norm = 0.0
-            param_count = 0
-            for param in self.crosscoder.parameters():
-                if param.grad is not None:
-                    param_norm = param.grad.data.norm(2)
-                    total_norm += param_norm.item() ** 2
-                    param_count += 1
-
-            if param_count > 0:
-                total_norm = total_norm ** (1.0 / 2)
-                grad_norm = total_norm
-
-                if total_norm > max_norm:
-                    clip_coef = max_norm / (total_norm + 1e-6)
-                    for param in self.crosscoder.parameters():
-                        if param.grad is not None:
-                            param.grad.data.mul_(clip_coef)
-        except Exception as e:
-            print(f"Gradient clipping failed: {e}")
-            grad_norm = 0.0
+        clip_grad_norm_(self.crosscoder.parameters(), max_norm=1.0)
 
         self.optimizer.step()
         self.scheduler.step()
         self.optimizer.zero_grad()
 
         with torch.no_grad():
-            encoded_acts = self.crosscoder.encode(acts)
+            preacts, encoded_acts = self.crosscoder.encode(acts)
+
+        mse = losses.reconstruction_loss.item() / (acts.shape[1] * acts.shape[2])
+
+        mean_sparsity_loss = losses.sparsity_loss.item() / self.crosscoder.ae_dim
+        mean_pre_act_loss = losses.pre_act_loss.item() / self.crosscoder.ae_dim
+
+        total_avg_loss = (
+            mse + (lambda_s * mean_sparsity_loss) + (lambda_p * mean_pre_act_loss)
+        )
 
         loss_dict = {
             "loss": loss.item(),
-            "l2_loss": losses.l2_loss.item(),
-            "l1_loss": losses.l1_loss.item(),
-            "l0_loss": losses.l0_loss.item(),
-            "l1_coeff": self.get_l1_coeff(),
-            "lr": self.scheduler.get_last_lr()[0],
-            "grad_norm": grad_norm,
-            "sparsity": (encoded_acts > 0).float().mean().item(),
-            "reconstruction_mse": losses.l2_loss.item() / acts.numel(),
+            "l2_loss (recon)": losses.reconstruction_loss.item(),
+            "sparsity_loss": losses.sparsity_loss.item(),
+            "pre_act_loss": losses.pre_act_loss.item(),
+            "avg_loss/total_scaled_avg": total_avg_loss,
+            "avg_loss/mse": mse,
+            "avg_loss/mean_sparsity": mean_sparsity_loss,
+            "avg_loss/mean_pre_act": mean_pre_act_loss,
+            "hyperparams/lambda_s": lambda_s,
+            "hyperparams/lambda_p": lambda_p,
+            "hyperparams/lr": self.scheduler.get_last_lr()[0],
+            "metrics/sparsity": (encoded_acts > 0).float().mean().item(),
         }
 
         self.step_counter += 1
@@ -678,6 +652,7 @@ class Trainer:
                     self.save()
 
                 if i % (self.cfg["log_interval"] * 10) == 0 and i > 0:
+                    print_gpu_memory(tag=f"Before Step {i + 1}")
                     try:
                         analysis = self.analyze()
                         if self.use_wandb:
@@ -709,7 +684,7 @@ class Trainer:
         sample_acts = sample_acts.to(dtype=self.cfg["dtype"], device=self.cfg["device"])
 
         with torch.no_grad():
-            encoded = self.crosscoder.encode(sample_acts)
+            preacts, encoded = self.crosscoder.encode(sample_acts)
             feature_sparsity = (encoded > 0).float().mean(dim=0)
 
             most_active = torch.argsort(feature_sparsity, descending=True)[:10]
