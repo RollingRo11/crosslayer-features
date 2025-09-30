@@ -24,6 +24,7 @@ from .data_storing_fns import (
     CrossLayerAggregatedActivationData,
     CrossLayerDLAData,
     CrossLayerFeatureCorrelationData,
+    DecoderNormCosineSimilarityData,
 )
 
 
@@ -337,6 +338,84 @@ def create_correlation_heatmap_plot(data: CrossLayerFeatureCorrelationData) -> s
 
     fig.update_layout(
         title=f"Feature Correlation Heatmap (Top {data.n_features} Features, n={data.n_samples_processed} samples)",
+        xaxis_title="Feature Index",
+        yaxis_title="Feature Index",
+        template="plotly_white",
+        width=800,
+        height=800,
+    )
+
+    return fig.to_html(include_plotlyjs='cdn')
+
+
+def compute_decoder_norm_cosine_similarity(
+    crosscoder,
+    feature_indices: List[int] | None = None,
+) -> DecoderNormCosineSimilarityData:
+    """
+    Compute cosine similarity between decoder norm vectors across features.
+
+    For each feature, the decoder has shape (n_layers, d_model).
+    We compute the L2 norm per layer, giving a vector of shape (n_layers,).
+    Then we compute cosine similarity between these norm vectors.
+
+    This measures how consistent the "direction" of a feature's representation
+    is across layers by comparing the pattern of decoder norms.
+
+    Args:
+        crosscoder: Crosscoder model
+        feature_indices: List of feature indices to include. If None, uses all features.
+
+    Returns:
+        DecoderNormCosineSimilarityData with cosine similarity matrix
+    """
+    if feature_indices is None:
+        feature_indices = list(range(crosscoder.ae_dim))
+
+    n_features = len(feature_indices)
+
+    # Compute decoder norms per layer for each feature
+    # W_dec shape: (ae_dim, n_layers, d_model)
+    # decoder_norms shape: (n_features, n_layers)
+    decoder_norms = torch.norm(
+        crosscoder.W_dec[feature_indices],
+        dim=-1
+    ).cpu().numpy()
+
+    # Compute cosine similarity matrix
+    # Normalize each feature's norm vector
+    norms = np.linalg.norm(decoder_norms, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1, norms)  # Avoid division by zero
+    normalized = decoder_norms / norms
+
+    # Cosine similarity is dot product of normalized vectors
+    cosine_sim_matrix = normalized @ normalized.T
+
+    return DecoderNormCosineSimilarityData(
+        cosine_similarity_matrix=cosine_sim_matrix.tolist(),
+        feature_indices=feature_indices,
+        n_features=n_features,
+    )
+
+
+def create_decoder_norm_cosine_similarity_plot(data: DecoderNormCosineSimilarityData) -> str:
+    """Create Plotly figure for decoder norm cosine similarity heatmap."""
+    fig = go.Figure(data=go.Heatmap(
+        z=data.cosine_similarity_matrix,
+        x=[f"F{i}" for i in data.feature_indices],
+        y=[f"F{i}" for i in data.feature_indices],
+        colorscale='RdBu',
+        zmid=0,
+        zmin=-1,
+        zmax=1,
+        text=np.round(data.cosine_similarity_matrix, 3),
+        texttemplate="%{text}",
+        textfont={"size": 8},
+        hovertemplate="Feature %{x} - Feature %{y}<br>Cosine Similarity: %{z:.3f}<extra></extra>"
+    ))
+
+    fig.update_layout(
+        title=f"Decoder Norm Cosine Similarity ({data.n_features} Features)",
         xaxis_title="Feature Index",
         yaxis_title="Feature Index",
         template="plotly_white",

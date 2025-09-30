@@ -822,6 +822,7 @@ def parse_feature_data(
         compute_aggregated_activation,
         compute_direct_logit_attribution,
         compute_feature_correlation,
+        compute_decoder_norm_cosine_similarity,
     )
 
     # Plot 1: Decoder Norms
@@ -878,6 +879,15 @@ def parse_feature_data(
         )
         for feat in feature_indices:
             feature_data_dict[feat]["featureCorrelation"] = correlation_data
+
+    # Decoder Norm Cosine Similarity Heatmap
+    if layout.decoder_norm_cosine_similarity_cfg is not None:
+        cosine_sim_data = compute_decoder_norm_cosine_similarity(
+            crosscoder,
+            feature_indices=feature_indices[:layout.decoder_norm_cosine_similarity_cfg.n_features],
+        )
+        for feat in feature_indices:
+            feature_data_dict[feat]["decoderNormCosineSimilarity"] = cosine_sim_data
 
     # Create the CrosscoderVisData object
     crosscoder_vis_data = CrosscoderVisData(

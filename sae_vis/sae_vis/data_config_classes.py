@@ -254,6 +254,18 @@ class CrossLayerFeatureCorrelationConfig(BaseComponentConfig):
         }
 
 
+@dataclass
+class DecoderNormCosineSimilarityConfig(BaseComponentConfig):
+    """Configuration for decoder norm cosine similarity heatmap"""
+    n_features: int = 50
+
+    @property
+    def help_dict(self) -> dict[str, str]:
+        return {
+            "n_features": "Number of features to include in cosine similarity matrix"
+        }
+
+
 
 @dataclass
 class LogitsTableConfig(BaseComponentConfig):
@@ -387,6 +399,7 @@ class CrosscoderVisLayoutConfig:
     aggregated_activation_cfg: CrossLayerAggregatedActivationConfig | None = None
     dla_cfg: CrossLayerDLAConfig | None = None
     feature_correlation_cfg: CrossLayerFeatureCorrelationConfig | None = None
+    decoder_norm_cosine_similarity_cfg: DecoderNormCosineSimilarityConfig | None = None
 
     COMPONENT_MAP: frozendict[str, str] = frozendict(
         {
@@ -404,6 +417,7 @@ class CrosscoderVisLayoutConfig:
             "CrossLayerAggregatedActivation": "aggregated_activation_cfg",
             "CrossLayerDLA": "dla_cfg",
             "CrossLayerFeatureCorrelation": "feature_correlation_cfg",
+            "DecoderNormCosineSimilarity": "decoder_norm_cosine_similarity_cfg",
         }
     )
 
@@ -476,6 +490,8 @@ class CrosscoderVisLayoutConfig:
                 component_name = "dla"
             elif component_name == "crossLayerFeatureCorrelation":
                 component_name = "featureCorrelation"
+            elif component_name == "decoderNormCosineSimilarity":
+                component_name = "decoderNormCosineSimilarity"
             return component_name
 
         layout = [
