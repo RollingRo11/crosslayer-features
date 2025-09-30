@@ -591,6 +591,7 @@ class CrosscoderVisLayoutConfig:
                     FeatureTablesConfig(),
                     ActsHistogramConfig(),
                     CrossLayerTrajectoryConfig(),
+                    DecoderNormCosineSimilarityConfig(),
                     width=600  # Wider left column for both graphs
                 ),
                 Column(SeqMultiGroupConfig(), width=800),  # Sequences on the right
