@@ -882,11 +882,11 @@ def parse_feature_data(
 
     # Decoder Norm Cosine Similarity Heatmap
     if layout.decoder_norm_cosine_similarity_cfg is not None:
-        cosine_sim_data = compute_decoder_norm_cosine_similarity(
-            crosscoder,
-            feature_indices=feature_indices[:layout.decoder_norm_cosine_similarity_cfg.n_features],
-        )
         for feat in feature_indices:
+            cosine_sim_data = compute_decoder_norm_cosine_similarity(
+                crosscoder,
+                feature_idx=feat,
+            )
             feature_data_dict[feat]["decoderNormCosineSimilarity"] = cosine_sim_data
 
     # Create the CrosscoderVisData object

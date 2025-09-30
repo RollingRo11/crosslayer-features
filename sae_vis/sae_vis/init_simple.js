@@ -647,7 +647,7 @@ function updateCrossLayerHeatmap(featureIdx, featureData) {
 // Update decoder norm cosine similarity heatmap
 function updateDecoderNormCosineSimilarity(featureIdx, featureData) {
     const container = document.getElementById('decoder-norm-cosine-similarity');
-    container.innerHTML = '<h3>Decoder Norm Cosine Similarity</h3>';
+    container.innerHTML = '<h3>Decoder Weight Cosine Similarity Across Layers</h3>';
 
     const cosineSimData = featureData.decoderNormCosineSimilarity;
 
@@ -658,31 +658,30 @@ function updateDecoderNormCosineSimilarity(featureIdx, featureData) {
 
     container.innerHTML += '<div id="cosine-sim-plot"></div>';
 
-    // Create feature labels
-    const featureLabels = cosineSimData.feature_indices.map(idx => `F${idx}`);
+    // Create layer labels
+    const layerLabels = Array.from({length: cosineSimData.n_layers}, (_, i) => `L${i}`);
 
     // Create heatmap using Plotly
     const trace = {
         z: cosineSimData.cosine_similarity_matrix,
-        x: featureLabels,
-        y: featureLabels,
+        x: layerLabels,
+        y: layerLabels,
         type: 'heatmap',
         colorscale: 'RdBu',
         zmid: 0,
-        hovertemplate: 'Feature %{x} - Feature %{y}<br>Cosine Similarity: %{z:.3f}<extra></extra>'
+        hovertemplate: 'Layer %{x} - Layer %{y}<br>Cosine Similarity: %{z:.3f}<extra></extra>'
     };
 
     const layout = {
-        margin: { t: 10, r: 30, b: 80, l: 60 },
+        margin: { t: 10, r: 30, b: 60, l: 60 },
         height: 400,
         xaxis: {
-            title: 'Feature Index',
+            title: 'Layer',
             titlefont: { size: 11 },
-            tickfont: { size: 9 },
-            tickangle: -45
+            tickfont: { size: 9 }
         },
         yaxis: {
-            title: 'Feature Index',
+            title: 'Layer',
             titlefont: { size: 11 },
             tickfont: { size: 9 }
         },

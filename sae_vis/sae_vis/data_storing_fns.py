@@ -1306,13 +1306,13 @@ class CrossLayerFeatureCorrelationData:
 class DecoderNormCosineSimilarityData:
     """Data for decoder norm cosine similarity heatmap."""
     cosine_similarity_matrix: list[list[float]]
-    feature_indices: list[int]
-    n_features: int
+    feature_idx: int
+    n_layers: int
 
     def data(self, **kwargs):
         return {
             "type": "decoderNormCosineSimilarity",
             "cosine_similarity_matrix": self.cosine_similarity_matrix,
-            "feature_indices": self.feature_indices,
-            "n_features": self.n_features
+            "feature_idx": self.feature_idx,
+            "n_layers": self.n_layers
         }

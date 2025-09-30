@@ -256,14 +256,12 @@ class CrossLayerFeatureCorrelationConfig(BaseComponentConfig):
 
 @dataclass
 class DecoderNormCosineSimilarityConfig(BaseComponentConfig):
-    """Configuration for decoder norm cosine similarity heatmap"""
-    n_features: int = 50
+    """Configuration for decoder norm cosine similarity heatmap.
 
-    @property
-    def help_dict(self) -> dict[str, str]:
-        return {
-            "n_features": "Number of features to include in cosine similarity matrix"
-        }
+    For a single feature, compares the decoder weight directions across all layers.
+    Shows how similar the feature's representation is at different layers.
+    """
+    pass
 
 
 

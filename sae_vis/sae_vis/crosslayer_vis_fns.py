@@ -350,51 +350,42 @@ def create_correlation_heatmap_plot(data: CrossLayerFeatureCorrelationData) -> s
 
 def compute_decoder_norm_cosine_similarity(
     crosscoder,
-    feature_indices: List[int] | None = None,
+    feature_idx: int,
 ) -> DecoderNormCosineSimilarityData:
     """
-    Compute cosine similarity between decoder norm vectors across features.
+    Compute cosine similarity between decoder weight directions across layers for a single feature.
 
-    For each feature, the decoder has shape (n_layers, d_model).
-    We compute the L2 norm per layer, giving a vector of shape (n_layers,).
-    Then we compute cosine similarity between these norm vectors.
-
-    This measures how consistent the "direction" of a feature's representation
-    is across layers by comparing the pattern of decoder norms.
+    For a single feature, the decoder has shape (n_layers, d_model).
+    We compute the cosine similarity between the decoder weight vectors at different layers.
+    This shows how similar the feature's representation direction is across layers.
 
     Args:
         crosscoder: Crosscoder model
-        feature_indices: List of feature indices to include. If None, uses all features.
+        feature_idx: The feature index to analyze
 
     Returns:
-        DecoderNormCosineSimilarityData with cosine similarity matrix
+        DecoderNormCosineSimilarityData with (n_layers, n_layers) cosine similarity matrix
     """
-    if feature_indices is None:
-        feature_indices = list(range(crosscoder.ae_dim))
+    n_layers = crosscoder.num_layers
 
-    n_features = len(feature_indices)
+    # Get decoder weights for this feature across all layers
+    # Shape: (n_layers, d_model)
+    decoder_weights = crosscoder.W_dec[feature_idx]
 
-    # Compute decoder norms per layer for each feature
-    # W_dec shape: (ae_dim, n_layers, d_model)
-    # decoder_norms shape: (n_features, n_layers)
-    decoder_norms = torch.norm(
-        crosscoder.W_dec[feature_indices],
-        dim=-1
-    ).float().cpu().numpy()
+    # Normalize each layer's decoder weight vector
+    # Shape: (n_layers, d_model)
+    norms = torch.norm(decoder_weights, dim=1, keepdim=True)
+    norms = torch.where(norms == 0, torch.ones_like(norms), norms)  # Avoid division by zero
+    normalized_weights = decoder_weights / norms
 
-    # Compute cosine similarity matrix
-    # Normalize each feature's norm vector
-    norms = np.linalg.norm(decoder_norms, axis=1, keepdims=True)
-    norms = np.where(norms == 0, 1, norms)  # Avoid division by zero
-    normalized = decoder_norms / norms
-
-    # Cosine similarity is dot product of normalized vectors
-    cosine_sim_matrix = normalized @ normalized.T
+    # Compute cosine similarity matrix between all pairs of layers
+    # Shape: (n_layers, n_layers)
+    cosine_sim_matrix = (normalized_weights @ normalized_weights.T).float().cpu().numpy()
 
     return DecoderNormCosineSimilarityData(
         cosine_similarity_matrix=cosine_sim_matrix.tolist(),
-        feature_indices=feature_indices,
-        n_features=n_features,
+        feature_idx=feature_idx,
+        n_layers=n_layers,
     )
 
 
