@@ -9,10 +9,11 @@ from pathlib import Path
 import tqdm
 import json
 import numpy as np
-import math
 from datasets import load_dataset
 from torch.nn.utils import clip_grad_norm_
 import sys
+import torch.autograd as autograd
+import math</parameter>
 import torch.autograd as autograd
 
 sys.path.append(str(Path(__file__).parent.parent / "sae_vis" / "sae_vis"))
@@ -24,9 +25,9 @@ DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class LossOutput(NamedTuple):
-    reconstruction_loss: torch.Tensor  # L2 Loss
-    sparsity_loss: torch.Tensor  # L_S (tanh loss)
-    pre_act_loss: torch.Tensor  # L_P (dead feature loss)
+    reconstruction_loss: torch.Tensor
+    sparsity_loss: torch.Tensor
+    pre_act_loss: torch.Tensor
 
 
 def print_gpu_memory(tag=""):
@@ -115,19 +116,22 @@ class Crosscoder(nn.Module):
         self.ae_dim = cfg["ae_dim"]
         self.dtype = cfg["dtype"]
         self.save_dir = None
-        # Initialize threshold in log-space: original was 0.001 linear, so log(0.001) ≈ -6.9
-        # Using -5.0 as a reasonable starting point (exp(-5.0) ≈ 0.0067)
+        # Use log-space threshold parameterization as per January 2025 paper
         self.log_threshold = nn.Parameter(
-            torch.full((self.ae_dim,), -5.0, dtype=self.dtype)
+            torch.full((self.ae_dim,), 0.1, dtype=self.dtype)
         )
+        dec_init_norm = self.init_norm</parameter>
         dec_init_norm = self.init_norm
 
         self.W_enc = nn.Parameter(
             torch.empty(self.num_layers, self.resid_dim, self.ae_dim, dtype=self.dtype)
         )
 
+        # Initialize W_dec with uniform distribution U(-1/√n, 1/√n) as per January 2025 paper
         self.W_dec = nn.Parameter(
-            torch.empty(self.ae_dim, self.num_layers, self.resid_dim, dtype=self.dtype)
+            torch.empty(
+                self.ae_dim, self.num_layers, self.resid_dim, dtype=self.dtype
+            )
         )
         bound = 1.0 / math.sqrt(self.resid_dim)
         torch.nn.init.uniform_(self.W_dec, -bound, bound)
@@ -136,13 +140,12 @@ class Crosscoder(nn.Module):
             dec_init_norm / self.W_dec.data.norm(dim=-1, keepdim=True)
         )
 
+        # Initialize W_enc with (n/m) scaling factor as per January 2025 paper
         scaling_factor = self.resid_dim / self.ae_dim
-        self.W_enc.data = (
-            einops.rearrange(
-                self.W_dec.data.clone(),
-                "ae_dim n_layers d_model -> n_layers d_model ae_dim",
-            )
-            * scaling_factor
+        self.W_enc.data = einops.rearrange(
+            self.W_dec.data.clone(),
+            "ae_dim n_layers d_model -> n_layers d_model ae_dim",
+        ) * scaling_factor</parameter>
         )
 
         self.b_enc = nn.Parameter(torch.zeros(self.ae_dim, dtype=self.dtype))
@@ -167,7 +170,8 @@ class Crosscoder(nn.Module):
         )
 
         preacts = x_enc + self.b_enc
-        acts = JumpReLUFunction.apply(preacts, torch.exp(self.log_threshold), 2.0)
+        # Use exp(log_threshold) and bandwidth=2.0 as per January 2025 paper
+        acts = JumpReLUFunction.apply(preacts, torch.exp(self.log_threshold), 2.0)</parameter>
 
         return preacts, acts
 
@@ -201,14 +205,15 @@ class Crosscoder(nn.Module):
             decoder_norms_per_layer, "ae_dim n_layers -> ae_dim", "sum"
         )
 
+        # Sparsity loss: decoder norms should be OUTSIDE tanh, not inside
         c = self.cfg["c"]
-        sparsity_term = torch.tanh(c * torch.abs(acts) * decoder_norms)
+        sparsity_term = torch.tanh(c * torch.abs(acts)) * decoder_norms
         sparsity_loss = sparsity_term.sum(dim=-1).mean()
 
-        # Pre-act loss: use preacts for smooth gradient flow
-        relu_term = F.relu(torch.exp(self.log_threshold) - preacts)
+        # Pre-act loss: use exp(log_threshold) and acts (post-activation) as per January 2025 paper
+        relu_term = F.relu(torch.exp(self.log_threshold) - acts)
         pre_act_loss_term = relu_term * decoder_norms
-        pre_act_loss = pre_act_loss_term.sum(dim=-1).mean()
+        pre_act_loss = pre_act_loss_term.sum(dim=-1).mean()</parameter>
 
         return LossOutput(
             reconstruction_loss=reconstruction_loss,
@@ -244,6 +249,7 @@ class Crosscoder(nn.Module):
                 "b_dec": self.b_dec.data,
                 "log_threshold": self.log_threshold.data,
                 "cfg": self.cfg,
+            },</parameter>
             },
             weight_path,
         )
@@ -340,12 +346,13 @@ class Buffer:
         )
         self.dataset_iter = iter(self.dataset)
 
-        # Use per-layer normalization as per 2024 crosscoder paper
-        estimated_norm_scaling_factors = self.estimate_norm_scaling_factor(batch_size=2)
+        # Single global normalization factor
+        estimated_norm_scaling_factor = self.estimate_norm_scaling_factor(batch_size=2)
         self.normalisation_factor = torch.tensor(
-            estimated_norm_scaling_factors,
+            estimated_norm_scaling_factor,
             device=cfg["device"],
             dtype=torch.bfloat16,
+        )</parameter>
         )
 
         self.refresh()
@@ -354,9 +361,9 @@ class Buffer:
     def estimate_norm_scaling_factor(
         self, batch_size, n_batches_for_norm_estimate: int = 100
     ):
-        # Use per-layer scaling factors as per 2024 crosscoder paper:
-        # "We separately normalize the activations of each layer"
-        norms_per_layer = [[] for _ in range(self.num_layers)]
+        # Use single global scaling factor as per January 2025 paper:
+        # "The dataset is scaled by a single constant such that E[||x||_2] = √n"
+        all_norms = []
 
         token_generator = self.get_tokens_batch_generator(
             n_batches_for_norm_estimate, batch_size
@@ -388,19 +395,17 @@ class Buffer:
                 all_acts.append(batch_acts)
 
             acts = torch.cat(all_acts, dim=0)
-            # Compute per-layer norms
-            layer_norms = acts.norm(dim=-1)  # Shape: (batch, num_layers)
-            for layer_idx in range(self.num_layers):
-                norms_per_layer[layer_idx].append(
-                    layer_norms[:, layer_idx].mean().item()
-                )
+            # Compute norms across all layers (treating as single dataset)
+            norms = acts.norm(dim=-1)  # Shape: (batch, num_layers)
+            all_norms.append(norms.flatten())
 
-        scaling_factors = []
-        for layer_idx in range(self.num_layers):
-            mean_norm = np.mean(norms_per_layer[layer_idx])
-            scaling_factor = mean_norm / math.sqrt(self.resid_dim)
-            scaling_factors.append(scaling_factor)
+        # Compute global mean norm across all samples and layers
+        all_norms = torch.cat(all_norms)
+        mean_norm = all_norms.mean().item()
+        # Return single scaling factor: mean_norm / √n
+        scaling_factor = mean_norm / math.sqrt(self.resid_dim)
 
+        return scaling_factor</parameter>
         return scaling_factors
 
     def get_tokens_batch_generator(self, n_batches, batch_size):
@@ -494,8 +499,10 @@ class Buffer:
         self.pointer += self.cfg["batch_size"]
 
         if self.normalize:
-            batch = batch / self.normalisation_factor[None, :, None]
+            # Single global normalization factor
+            batch = batch / self.normalisation_factor
 
+        return batch.to(self.cfg["device"])</parameter>
         return batch.to(self.cfg["device"])
 
     def get_tokens_batch(self):
@@ -553,7 +560,8 @@ class Trainer:
             self.crosscoder.parameters(),
             lr=cfg["lr"],
             betas=(cfg["beta1"], cfg["beta2"]),
-            weight_decay=0.0,
+            weight_decay=0.0,  # Explicitly set to 0 as per January 2025 paper
+        )</parameter>
         )
 
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
