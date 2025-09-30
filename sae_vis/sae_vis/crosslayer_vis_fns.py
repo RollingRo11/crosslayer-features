@@ -39,7 +39,7 @@ def compute_decoder_norms(crosscoder, feature_indices: List[int]) -> CrossLayerD
         decoder_weights = crosscoder.W_dec[feature_idx]  # Shape: (n_layers, d_model)
 
         # Compute L2 norm for each layer
-        decoder_norms = torch.norm(decoder_weights, dim=1).cpu().numpy().tolist()
+        decoder_norms = torch.norm(decoder_weights, dim=1).float().cpu().numpy().tolist()
 
         norms_data[feature_idx] = decoder_norms
 
@@ -67,7 +67,7 @@ def compute_activation_heatmap(
     # Create a synthetic heatmap based on decoder norms
     # This avoids expensive recomputation
     decoder_weights = crosscoder.W_dec[feature_idx]  # (n_layers, d_model)
-    layer_norms = torch.norm(decoder_weights, dim=1).cpu().numpy()
+    layer_norms = torch.norm(decoder_weights, dim=1).float().cpu().numpy()
 
     # Create activation matrix with some variation
     layer_acts = []
@@ -107,7 +107,7 @@ def compute_aggregated_activation(
     for feat_idx in feature_indices:
         # Use decoder norms as a proxy for layer importance
         decoder_weights = crosscoder.W_dec[feat_idx]  # (n_layers, d_model)
-        layer_norms = torch.norm(decoder_weights, dim=1).cpu().numpy()
+        layer_norms = torch.norm(decoder_weights, dim=1).float().cpu().numpy()
 
         # Normalize to create a profile
         if layer_norms.sum() > 0:
@@ -160,9 +160,9 @@ def compute_direct_logit_attribution(
 
         dla_by_layer[layer_idx] = {
             "top_tokens": top_tokens,
-            "top_values": top_values.cpu().numpy().tolist(),
+            "top_values": top_values.float().cpu().numpy().tolist(),
             "bottom_tokens": bottom_tokens,
-            "bottom_values": bottom_values.cpu().numpy().tolist(),
+            "bottom_values": bottom_values.float().cpu().numpy().tolist(),
         }
 
     return CrossLayerDLAData(
@@ -201,7 +201,7 @@ def compute_feature_correlation(
         decoder_norm = decoder_flat / (torch.norm(decoder_flat, dim=1, keepdim=True) + 1e-8)
 
         # Compute correlations
-        correlation_matrix = (decoder_norm @ decoder_norm.T).cpu().numpy()
+        correlation_matrix = (decoder_norm @ decoder_norm.T).float().cpu().numpy()
 
     return CrossLayerFeatureCorrelationData(
         correlation_matrix=correlation_matrix.tolist(),
