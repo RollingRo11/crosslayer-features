@@ -380,7 +380,7 @@ def compute_decoder_norm_cosine_similarity(
     decoder_norms = torch.norm(
         crosscoder.W_dec[feature_indices],
         dim=-1
-    ).cpu().numpy()
+    ).float().cpu().numpy()
 
     # Compute cosine similarity matrix
     # Normalize each feature's norm vector
