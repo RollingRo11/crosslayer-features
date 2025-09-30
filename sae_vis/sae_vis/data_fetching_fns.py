@@ -373,11 +373,12 @@ def parse_feature_data(
             decoder_norms_array = torch.norm(decoder_weights_float, dim=1).cpu().numpy()
 
             # Compute relative importance to better indicate cross-layer superposition
-            total_norm = np.linalg.norm(decoder_norms_array)
-            if total_norm > 0:
-                relative_norms = decoder_norms_array / total_norm
+            # Use max normalization: rescale so that the maximum value is 1
+            max_norm = decoder_norms_array.max()
+            if max_norm > 0:
+                relative_norms = decoder_norms_array / max_norm
                 # Calculate cross-layer metrics
-                # Count layers with significant contribution (>5% of total norm)
+                # Count layers with significant contribution (>5% of peak value)
                 significant_layers = np.sum(relative_norms > 0.05)
                 # Calculate entropy as measure of spread (higher = more cross-layer)
                 norm_probs = decoder_norms_array / (decoder_norms_array.sum() + 1e-8)
@@ -391,7 +392,7 @@ def parse_feature_data(
 
             # Use relative norms for normalized view, absolute for non-normalized
             if trajectory_cfg.normalize:
-                # Show relative importance (sums to 1)
+                # Show relative importance (max = 1, for ease of visual comparison)
                 trajectories = [relative_norms.tolist()]
                 mean_trajectory = relative_norms.tolist()
             else:

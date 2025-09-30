@@ -177,7 +177,7 @@ class CrossLayerTrajectoryConfig(BaseComponentConfig):
     """Configuration for cross-layer feature decoder norm trajectory plot"""
     n_sequences: int = 1  # Not used for decoder norms (always shows single trajectory)
     height: int = 400  # Height of the plot
-    normalize: bool = True  # Whether to normalize decoder norms to [0, 1]
+    normalize: bool = True  # Whether to rescale so maximum decoder norm is 1
     show_mean: bool = True  # Whether to show the trajectory line
 
     def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
@@ -189,7 +189,7 @@ class CrossLayerTrajectoryConfig(BaseComponentConfig):
         return {
             "n_sequences": "Not used for decoder norm trajectory (always single trajectory)",
             "height": "Height of the trajectory plot",
-            "normalize": "Whether to normalize decoder norms to [0, 1] range",
+            "normalize": "Whether to rescale decoder norms so maximum is 1 (for visual comparison)",
             "show_mean": "Whether to show the decoder norm trajectory line"
         }
 

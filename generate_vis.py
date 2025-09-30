@@ -467,7 +467,7 @@ def main():
         CrossLayerTrajectoryConfig(
             n_sequences=1,  # Not used for decoder norms (always single trajectory)
             height=400,
-            normalize=True,  # Normalize decoder norms to [0, 1]
+            normalize=True,  # Rescale norms so maximum value is 1 (for visual comparison)
             show_mean=True,
         )
     )

@@ -576,7 +576,8 @@ function updateCrossLayerTrajectory(featureIdx, featureData) {
             title: 'Feature Norm',
             titlefont: { size: 11 },
             tickfont: { size: 10 },
-            gridcolor: '#f0f0f0'
+            gridcolor: '#f0f0f0',
+            range: [0, 1]
         },
         plot_bgcolor: 'white',
         paper_bgcolor: 'white',
