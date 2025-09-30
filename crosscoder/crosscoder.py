@@ -46,9 +46,9 @@ def print_gpu_memory(tag=""):
 
 cc_config = {
     "seed": 11,
-    "batch_size": 2048,
+    "batch_size": 4096,
     "buffer_mult": 24,
-    "lr": 2e-5,
+    "lr": 2e-4,
     "num_tokens": int(4e8),
     "beta1": 0.9,
     "beta2": 0.999,
@@ -118,7 +118,7 @@ class Crosscoder(nn.Module):
         # Initialize threshold in log-space: original was 0.001 linear, so log(0.001) ≈ -6.9
         # Using -5.0 as a reasonable starting point (exp(-5.0) ≈ 0.0067)
         self.log_threshold = nn.Parameter(
-            torch.full((self.ae_dim,), -5.0, dtype=self.dtype)
+            torch.full((self.ae_dim,), 0.1, dtype=self.dtype)
         )
         dec_init_norm = self.init_norm
 
@@ -131,10 +131,6 @@ class Crosscoder(nn.Module):
         )
         bound = 1.0 / math.sqrt(self.resid_dim)
         torch.nn.init.uniform_(self.W_dec, -bound, bound)
-
-        self.W_dec.data = self.W_dec.data * (
-            dec_init_norm / self.W_dec.data.norm(dim=-1, keepdim=True)
-        )
 
         scaling_factor = self.resid_dim / self.ae_dim
         self.W_enc.data = (
@@ -206,7 +202,7 @@ class Crosscoder(nn.Module):
         sparsity_loss = sparsity_term.sum(dim=-1).mean()
 
         # Pre-act loss: use preacts for smooth gradient flow
-        relu_term = F.relu(torch.exp(self.log_threshold) - preacts)
+        relu_term = F.relu(torch.exp(self.log_threshold) - acts)
         pre_act_loss_term = relu_term * decoder_norms
         pre_act_loss = pre_act_loss_term.sum(dim=-1).mean()
 
