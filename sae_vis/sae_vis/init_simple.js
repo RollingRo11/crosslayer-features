@@ -157,7 +157,13 @@ function displayFeature(featureIdx) {
     
     // Update cross-layer trajectory (feature norm over layers)
     updateCrossLayerTrajectory(featureIdx, featureData);
-    
+
+    // Update cross-layer activation heatmap
+    updateCrossLayerHeatmap(featureIdx, featureData);
+
+    // Update decoder norm cosine similarity
+    updateDecoderNormCosineSimilarity(featureIdx, featureData);
+
     // Update top activations
     updateTopActivations(featureIdx, featureData);
 }
@@ -585,6 +591,112 @@ function updateCrossLayerTrajectory(featureIdx, featureData) {
     };
     
     Plotly.newPlot('trajectory-plot', [trace], layout, config);
+}
+
+// Update cross-layer activation heatmap
+function updateCrossLayerHeatmap(featureIdx, featureData) {
+    const container = document.getElementById('cross-layer-heatmap');
+    container.innerHTML = '<h3>Cross-Layer Activation Heatmap</h3>';
+
+    const heatmapData = featureData.activationHeatmap;
+
+    if (!heatmapData || !heatmapData.activation_matrix) {
+        container.innerHTML += '<p style="color: #999; padding: 20px;">No heatmap data available</p>';
+        return;
+    }
+
+    container.innerHTML += '<div id="heatmap-plot"></div>';
+
+    // Create heatmap using Plotly
+    const trace = {
+        z: heatmapData.activation_matrix,
+        x: heatmapData.token_strings || [],
+        y: Array.from({length: heatmapData.n_layers}, (_, i) => `L${i}`),
+        type: 'heatmap',
+        colorscale: 'Viridis',
+        hovertemplate: 'Token: %{x}<br>Layer: %{y}<br>Activation: %{z:.3f}<extra></extra>'
+    };
+
+    const layout = {
+        margin: { t: 10, r: 30, b: 80, l: 60 },
+        height: 300,
+        xaxis: {
+            title: 'Tokens',
+            titlefont: { size: 11 },
+            tickfont: { size: 9 },
+            tickangle: -45
+        },
+        yaxis: {
+            title: 'Layer',
+            titlefont: { size: 11 },
+            tickfont: { size: 10 }
+        },
+        plot_bgcolor: 'white',
+        paper_bgcolor: 'white'
+    };
+
+    const config = {
+        responsive: true,
+        displayModeBar: true,
+        displaylogo: false
+    };
+
+    Plotly.newPlot('heatmap-plot', [trace], layout, config);
+}
+
+// Update decoder norm cosine similarity heatmap
+function updateDecoderNormCosineSimilarity(featureIdx, featureData) {
+    const container = document.getElementById('decoder-norm-cosine-similarity');
+    container.innerHTML = '<h3>Decoder Norm Cosine Similarity</h3>';
+
+    const cosineSimData = featureData.decoderNormCosineSimilarity;
+
+    if (!cosineSimData || !cosineSimData.cosine_similarity_matrix) {
+        container.innerHTML += '<p style="color: #999; padding: 20px;">No cosine similarity data available</p>';
+        return;
+    }
+
+    container.innerHTML += '<div id="cosine-sim-plot"></div>';
+
+    // Create feature labels
+    const featureLabels = cosineSimData.feature_indices.map(idx => `F${idx}`);
+
+    // Create heatmap using Plotly
+    const trace = {
+        z: cosineSimData.cosine_similarity_matrix,
+        x: featureLabels,
+        y: featureLabels,
+        type: 'heatmap',
+        colorscale: 'RdBu',
+        zmid: 0,
+        hovertemplate: 'Feature %{x} - Feature %{y}<br>Cosine Similarity: %{z:.3f}<extra></extra>'
+    };
+
+    const layout = {
+        margin: { t: 10, r: 30, b: 80, l: 60 },
+        height: 400,
+        xaxis: {
+            title: 'Feature Index',
+            titlefont: { size: 11 },
+            tickfont: { size: 9 },
+            tickangle: -45
+        },
+        yaxis: {
+            title: 'Feature Index',
+            titlefont: { size: 11 },
+            tickfont: { size: 9 }
+        },
+        plot_bgcolor: 'white',
+        paper_bgcolor: 'white'
+    };
+
+    const config = {
+        responsive: true,
+        displayModeBar: true,
+        displaylogo: false
+    };
+
+    Plotly.newPlot('cosine-sim-plot', [trace], layout, config);
 }
 
 // Initialize on load

@@ -1188,6 +1188,8 @@ class CrosscoderVisData:
             <div class="graphs-column">
                 <div id="histogram-container"></div>
                 <div id="cross-layer-trajectory"></div>
+                <div id="cross-layer-heatmap"></div>
+                <div id="decoder-norm-cosine-similarity"></div>
             </div>
         </div>
         

@@ -591,6 +591,7 @@ class CrosscoderVisLayoutConfig:
                     FeatureTablesConfig(),
                     ActsHistogramConfig(),
                     CrossLayerTrajectoryConfig(),
+                    CrossLayerActivationHeatmapConfig(),
                     DecoderNormCosineSimilarityConfig(),
                     width=600  # Wider left column for both graphs
                 ),
