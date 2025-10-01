@@ -524,7 +524,7 @@ class Buffer:
 
 
 class Trainer:
-    def __init__(self, cfg, use_wandb=True):
+    def __init__(self, cfg, use_wandb=True, resume_from=None):
         self.cfg = cfg
         if self.cfg["model_name"] == "gpt2":
             self.model = LanguageModel("gpt2", device_map="auto")
@@ -558,6 +558,10 @@ class Trainer:
 
         self.step_counter: int = 0
 
+        # Resume from checkpoint if provided
+        if resume_from is not None:
+            self.load_checkpoint(resume_from)
+
         if use_wandb:
             WANDB_DIR.mkdir(exist_ok=True)
             wandb.init(
@@ -565,6 +569,8 @@ class Trainer:
                 entity="rohan-kathuria-neu",
                 config=cfg,
                 dir=str(WANDB_DIR),
+                resume="allow" if resume_from else None,
+                id=Path(resume_from).parent.name if resume_from else None,
             )
 
     def lr_lambda(self, step):
@@ -648,16 +654,103 @@ class Trainer:
     def save(self):
         self.crosscoder.save()
 
+    def save_checkpoint(self, step=None):
+        """Save complete training checkpoint including optimizer, scheduler, and RNG states"""
+        if self.crosscoder.save_dir is None:
+            SAVE_DIR.mkdir(parents=True, exist_ok=True)
+            version_list = [
+                int(file.name.split("_")[1])
+                for file in list(SAVE_DIR.iterdir())
+                if "version" in str(file)
+            ]
+            if len(version_list):
+                version = 1 + max(version_list)
+            else:
+                version = 0
+            self.crosscoder.save_dir = SAVE_DIR / f"version_{version}"
+            self.crosscoder.save_dir.mkdir(parents=True, exist_ok=True)
+
+        step = step if step is not None else self.step_counter
+        checkpoint_path = self.crosscoder.save_dir / f"checkpoint_{step}.pt"
+
+        # Save complete training state
+        checkpoint = {
+            # Model weights
+            "W_enc": self.crosscoder.W_enc.data,
+            "W_dec": self.crosscoder.W_dec.data,
+            "b_enc": self.crosscoder.b_enc.data,
+            "b_dec": self.crosscoder.b_dec.data,
+            "log_threshold": self.crosscoder.log_threshold.data,
+
+            # Training state
+            "step_counter": self.step_counter,
+            "optimizer_state": self.optimizer.state_dict(),
+            "scheduler_state": self.scheduler.state_dict(),
+
+            # RNG states for reproducibility
+            "torch_rng_state": torch.get_rng_state(),
+            "numpy_rng_state": np.random.get_state(),
+
+            # Config
+            "cfg": self.cfg,
+        }
+
+        # Add CUDA RNG state if using GPU
+        if torch.cuda.is_available():
+            checkpoint["cuda_rng_state"] = torch.cuda.get_rng_state()
+
+        torch.save(checkpoint, checkpoint_path)
+
+        # Create/update 'latest' symlink
+        latest_path = self.crosscoder.save_dir / "latest.pt"
+        if latest_path.exists() or latest_path.is_symlink():
+            latest_path.unlink()
+        latest_path.symlink_to(checkpoint_path.name)
+
+        print(f"Checkpoint saved: {checkpoint_path}")
+
+    def load_checkpoint(self, checkpoint_path):
+        """Load complete training checkpoint and restore all states"""
+        print(f"Loading checkpoint from: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=self.cfg["device"])
+
+        # Restore model weights
+        self.crosscoder.W_enc.data = checkpoint["W_enc"]
+        self.crosscoder.W_dec.data = checkpoint["W_dec"]
+        self.crosscoder.b_enc.data = checkpoint["b_enc"]
+        self.crosscoder.b_dec.data = checkpoint["b_dec"]
+        self.crosscoder.log_threshold.data = checkpoint["log_threshold"]
+
+        # Restore training state
+        self.step_counter = checkpoint["step_counter"]
+        self.optimizer.load_state_dict(checkpoint["optimizer_state"])
+        self.scheduler.load_state_dict(checkpoint["scheduler_state"])
+
+        # Restore RNG states for reproducibility
+        torch.set_rng_state(checkpoint["torch_rng_state"])
+        np.random.set_state(checkpoint["numpy_rng_state"])
+        if torch.cuda.is_available() and "cuda_rng_state" in checkpoint:
+            torch.cuda.set_rng_state(checkpoint["cuda_rng_state"])
+
+        # Set crosscoder's save_dir to the checkpoint's directory
+        self.crosscoder.save_dir = Path(checkpoint_path).parent
+
+        print(f"Resumed from step {self.step_counter}")
+
     def train(self):
-        self.step_counter = 0
+        start_step = self.step_counter
         try:
-            for i in tqdm.trange(self.total_steps):
+            # Use tqdm with initial value if resuming
+            pbar = tqdm.tqdm(initial=start_step, total=self.total_steps)
+            for i in range(start_step, self.total_steps):
                 loss_dict = self.step()
+                pbar.update(1)
+
                 if i % self.cfg["log_interval"] == 0:
                     self.log(loss_dict)
                 if (i + 1) % self.cfg["save_interval"] == 0:
                     print(f"Saving checkpoint at step {i + 1}")
-                    self.save()
+                    self.save_checkpoint(step=i + 1)
 
                 if i % (self.cfg["log_interval"] * 10) == 0 and i > 0:
                     print_gpu_memory(tag=f"Before Step {i + 1}")
@@ -683,8 +776,12 @@ class Trainer:
                             )
                     except Exception as e:
                         print(f"Failed: {e}")
+            pbar.close()
 
         finally:
+            print(f"Saving final checkpoint at step {self.step_counter}")
+            self.save_checkpoint()
+            # Also save lightweight model weights
             self.save()
 
     def analyze(self, n_samples=1000):
