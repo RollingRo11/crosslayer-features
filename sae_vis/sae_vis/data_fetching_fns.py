@@ -9,7 +9,7 @@ import sys
 import einops
 import numpy as np
 import torch
-from eindex import eindex
+import eindex
 from jaxtyping import Float, Int
 from rich import print as rprint
 from rich.table import Table

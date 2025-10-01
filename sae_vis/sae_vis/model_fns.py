@@ -10,7 +10,8 @@ from nnsight import LanguageModel
 from .utils_fns import VocabType
 from .model_utils import get_unembedding_matrix
 import sys
-sys.path.append('..')
+
+sys.path.append("..")
 from crosscoder.crosscoder import Crosscoder
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,7 +35,7 @@ def to_resid_dir(
 def resid_final_pre_layernorm_to_logits(x: Tensor, model: LanguageModel):
     # Access model's final layer norm and unembedding through NNsight
     config = model.config.to_dict()
-    eps = config.get('layer_norm_epsilon', 1e-5)
+    eps = config.get("layer_norm_epsilon", 1e-5)
 
     x = x - x.mean(-1, keepdim=True)  # [batch, pos, length]
     scale = x.pow(2).mean(-1, keepdim=True) + eps
@@ -72,22 +73,24 @@ def load_othello_vocab() -> dict[VocabType, dict[int, str]]:
     }
 
 
-def load_crosscoder_checkpoint(checkpoint_path: str, device: str) -> tuple[Crosscoder, LanguageModel]:
+def load_crosscoder_checkpoint(
+    checkpoint_path: str, device: str
+) -> tuple[Crosscoder, LanguageModel]:
     """
     Load a crosscoder checkpoint and the associated model.
     """
     # Load the checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     # Extract config from checkpoint
-    cc_config = checkpoint['cc_config']
-    cc_config['device'] = device
+    cc_config = checkpoint["cc_config"]
+    cc_config["device"] = device
 
     # Create crosscoder instance
     crosscoder = Crosscoder(cc_config)
 
     # Load state dict
-    crosscoder.load_state_dict(checkpoint['cc_state_dict'])
+    crosscoder.load_state_dict(checkpoint["cc_state_dict"])
 
     # Get the model (already loaded in crosscoder)
     model = crosscoder.model
@@ -95,7 +98,12 @@ def load_crosscoder_checkpoint(checkpoint_path: str, device: str) -> tuple[Cross
     return crosscoder, model
 
 
-def tokenize_dataset(dataset_name: str = 'monology/pile-uncopyrighted', model: LanguageModel = None, seq_len: int = 128, num_samples: int = 10000):
+def tokenize_dataset(
+    dataset_name: str = "monology/pile-uncopyrighted",
+    model: LanguageModel = None,
+    seq_len: int = 128,
+    num_samples: int = 10000,
+):
     """Tokenize a dataset for use with the crosscoder visualization."""
     from pathlib import Path
 
@@ -106,13 +114,23 @@ def tokenize_dataset(dataset_name: str = 'monology/pile-uncopyrighted', model: L
 
     try:
         # Load dataset with proper caching and streaming
-        dataset = load_dataset(dataset_name, split="train", streaming=True, cache_dir=str(DATASET_CACHE_DIR))
+        dataset = load_dataset(
+            dataset_name,
+            split="train",
+            streaming=True,
+            cache_dir=str(DATASET_CACHE_DIR),
+        )
     except Exception as e:
         print(f"Error loading {dataset_name}: {e}")
         # Fallback to The Pile if another dataset fails
-        if dataset_name != 'monology/pile-uncopyrighted':
+        if dataset_name != "monology/pile-uncopyrighted":
             print("Falling back to The Pile dataset...")
-            dataset = load_dataset('monology/pile-uncopyrighted', split="train", streaming=True, cache_dir=str(DATASET_CACHE_DIR))
+            dataset = load_dataset(
+                "monology/pile-uncopyrighted",
+                split="train",
+                streaming=True,
+                cache_dir=str(DATASET_CACHE_DIR),
+            )
         else:
             raise e
 
@@ -126,10 +144,10 @@ def tokenize_dataset(dataset_name: str = 'monology/pile-uncopyrighted', model: L
             break
 
         # Get text from sample
-        if 'text' in sample:
-            text = sample['text']
-        elif 'content' in sample:
-            text = sample['content']
+        if "text" in sample:
+            text = sample["text"]
+        elif "content" in sample:
+            text = sample["content"]
         else:
             # Try to find any text field
             text = str(list(sample.values())[0])

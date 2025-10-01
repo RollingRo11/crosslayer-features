@@ -31,23 +31,31 @@ from sae_vis.data_storing_fns import CrosscoderVisData
 
 
 def load_latest_checkpoint(device=None):
-    """Load the most recent crosscoder checkpoint."""
+    """Load the most recent crosscoder checkpoint from latest.pt in the most recent version folder."""
     saves_dir = Path("crosscoder/saves")
 
-    checkpoints = list(saves_dir.glob("version_*/[0-9]*.pt"))
-    if not checkpoints:
-        raise ValueError(f"No checkpoints found in {saves_dir}")
+    # Find all version folders
+    version_folders = list(saves_dir.glob("version_*"))
+    if not version_folders:
+        raise ValueError(f"No version folders found in {saves_dir}")
 
-    # Sort by version and checkpoint number
+    # Sort by version number to get the most recent
     def sort_key(path):
-        version = int(path.parent.name.split("_")[1])
-        checkpoint = int(path.stem)
-        return (version, checkpoint)
+        version = int(path.name.split("_")[1])
+        return version
 
-    checkpoints.sort(key=sort_key)
-    latest = checkpoints[-1]
+    version_folders.sort(key=sort_key)
+    latest_version_folder = version_folders[-1]
 
-    print(f"Loading checkpoint: {latest}")
+    # Look for latest.pt in the most recent version folder
+    latest_pt = latest_version_folder / "latest.pt"
+    if not latest_pt.exists():
+        raise ValueError(f"latest.pt not found in {latest_version_folder}")
+
+    # Resolve symlink to get actual checkpoint path
+    latest = latest_pt.resolve()
+
+    print(f"Loading checkpoint: {latest} (from {latest_version_folder.name})")
 
     # Auto-detect device if not specified
     if device is None:
@@ -57,11 +65,16 @@ def load_latest_checkpoint(device=None):
 
     # Load checkpoint with appropriate device mapping
     map_location = device if device == "cpu" else None
-    checkpoint = torch.load(latest, map_location=map_location)
+    checkpoint = torch.load(latest, map_location=map_location, weights_only=False)
 
-    # Load config
+    # Load config - try checkpoint-specific config first, then fall back to 0_cfg.json
     config_file = latest.parent / f"{latest.stem}_cfg.json"
+    if not config_file.exists():
+        # Fall back to 0_cfg.json which is typically the base config
+        config_file = latest.parent / "0_cfg.json"
+
     if config_file.exists():
+        print(f"Loading config from: {config_file}")
         with open(config_file) as f:
             cfg = json.load(f)
         # Convert dtype string
@@ -69,6 +82,7 @@ def load_latest_checkpoint(device=None):
             cfg["dtype"] = getattr(torch, cfg["dtype"].split(".")[-1])
     else:
         # Default config
+        print("No config file found, using defaults")
         cfg = {
             "model_name": "gpt2",
             "ae_dim": 4096,
@@ -207,7 +221,7 @@ def load_diverse_data(
     # Check for cached data
     if use_cache and cache_file and Path(cache_file).exists():
         print(f"Loading cached tokens from {cache_file}...")
-        tokens = torch.load(cache_file)
+        tokens = torch.load(cache_file, weights_only=False)
         print(f"Loaded {len(tokens)} cached sequences")
         return tokens
 
@@ -463,13 +477,11 @@ def main():
     )
 
     # Add cross-layer trajectory visualization
-    config.feature_centric_layout.cross_layer_trajectory_cfg = (
-        CrossLayerTrajectoryConfig(
-            n_sequences=1,  # Not used for decoder norms (always single trajectory)
-            height=400,
-            normalize=True,  # Rescale norms so maximum value is 1 (for visual comparison)
-            show_mean=True,
-        )
+    config.feature_centric_layout.cross_layer_trajectory_cfg = CrossLayerTrajectoryConfig(
+        n_sequences=1,  # Not used for decoder norms (always single trajectory)
+        height=400,
+        normalize=True,  # Rescale norms so maximum value is 1 (for visual comparison)
+        show_mean=True,
     )
 
     # Get feature data with progress tracking

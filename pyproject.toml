@@ -20,4 +20,9 @@ dependencies = [
     "tqdm>=4.67.1",
     "wandb>=0.20.1",
     "zstandard>=0.23.0",
+    "rich>=14.1.0",
+    "eindex>=0.1.0",
+    "jaxtyping>=0.3.3",
+    "dataclasses-json>=0.6.7",
+    "matplotlib>=3.10.6",
 ]

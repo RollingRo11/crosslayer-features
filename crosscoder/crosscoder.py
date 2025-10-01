@@ -48,7 +48,7 @@ cc_config = {
     "seed": 11,
     "batch_size": 4096,
     "buffer_mult": 24,
-    "lr": 2e-4,
+    "lr": 5e-5,
     "num_tokens": int(4e8),
     "beta1": 0.9,
     "beta2": 0.999,
@@ -56,7 +56,7 @@ cc_config = {
     "device": "cuda",
     "model_batch_size": 8,
     "log_interval": 100,
-    "save_interval": 50000,
+    "save_interval": 20000,
     "model_name": "gemma2-2b",  # gpt2, pythia, gemma3-4b, qwen3-4b, gemma2-2b
     "dtype": torch.bfloat16,
     "ae_dim": 2**15,
@@ -68,6 +68,8 @@ cc_config = {
     "l_s_coefficient": 10,
     "l_p_coefficient": 3e-6,
     "c": 4.0,
+    "initial_approx_firing_pct": 0.25,  # Target ~25% feature activation initially
+    "n_tokens_for_bias_init": 5000,  # Number of tokens to use for bias initialization
 }
 
 CROSSCODER_DIR = Path(__file__).parent
@@ -115,12 +117,9 @@ class Crosscoder(nn.Module):
         self.ae_dim = cfg["ae_dim"]
         self.dtype = cfg["dtype"]
         self.save_dir = None
-        # Initialize threshold in log-space: original was 0.001 linear, so log(0.001) ≈ -6.9
-        # Using -5.0 as a reasonable starting point (exp(-5.0) ≈ 0.0067)
         self.log_threshold = nn.Parameter(
             torch.full((self.ae_dim,), 0.1, dtype=self.dtype)
         )
-        dec_init_norm = self.init_norm
 
         self.W_enc = nn.Parameter(
             torch.empty(self.num_layers, self.resid_dim, self.ae_dim, dtype=self.dtype)
@@ -163,7 +162,7 @@ class Crosscoder(nn.Module):
         )
 
         preacts = x_enc + self.b_enc
-        acts = JumpReLUFunction.apply(preacts, torch.exp(self.log_threshold), 2.0)
+        acts = JumpReLUFunction.apply(preacts, self.log_threshold, 2.0)
 
         return preacts, acts
 
@@ -179,6 +178,87 @@ class Crosscoder(nn.Module):
     def forward(self, x):
         acts = self.encode(x)
         return self.decode(acts)
+
+    @torch.no_grad()
+    def initialize_b_enc(self, buffer, initial_approx_firing_pct=0.25, n_tokens=5000):
+        """
+        Initialize encoder bias based on data distribution to achieve target firing rate.
+
+        This follows the Anthropic January 2025 approach:
+        1. Sample data and compute pre-bias activations (W_enc @ x)
+        2. For each feature, find the quantile that would make it fire the desired fraction of time
+        3. Set bias = threshold - quantile, so that post-bias activations reach threshold
+
+        Args:
+            buffer: Buffer object to sample activations from
+            initial_approx_firing_pct: Target fraction of features to fire (default 0.25 = 25%)
+            n_tokens: Number of tokens to sample for calibration
+        """
+        print(f"\nInitializing encoder bias with {n_tokens} tokens...")
+        print(f"Target firing percentage: {initial_approx_firing_pct * 100:.1f}%")
+
+        # Collect pre-bias activations
+        n_batches = (n_tokens + self.cfg["batch_size"] - 1) // self.cfg["batch_size"]
+        pre_bias_list = []
+
+        for i in tqdm.tqdm(range(n_batches), desc="Collecting pre-bias activations"):
+            acts = buffer.next()
+            acts = acts.to(dtype=self.dtype, device=self.cfg["device"])
+
+            # Compute pre-bias activations: W_enc @ x (without adding b_enc)
+            pre_bias = einops.einsum(
+                acts,
+                self.W_enc,
+                "... n_layers d_model, n_layers d_model ae_dim -> ... ae_dim",
+            )
+
+            pre_bias_list.append(pre_bias)
+
+            if len(pre_bias_list) * self.cfg["batch_size"] >= n_tokens:
+                break
+
+        # Concatenate all pre-bias activations: shape (n_samples, ae_dim)
+        pre_bias_all = torch.cat(pre_bias_list, dim=0)[:n_tokens]
+        print(f"Collected pre-bias shape: {pre_bias_all.shape}")
+
+        # Compute quantiles for each feature
+        # We want (1 - initial_approx_firing_pct) quantile because we fire when pre_bias + bias > threshold
+        threshold = torch.exp(self.log_threshold)
+
+        print("Computing quantiles for each feature...")
+        # Process in chunks to avoid memory issues with large ae_dim
+        chunk_size = 4096
+        quantiles = torch.empty(
+            self.ae_dim, dtype=self.dtype, device=self.cfg["device"]
+        )
+
+        for i in tqdm.tqdm(
+            range(0, self.ae_dim, chunk_size), desc="Computing quantiles"
+        ):
+            end_idx = min(i + chunk_size, self.ae_dim)
+            chunk = pre_bias_all[:, i:end_idx]
+
+            # Quantile at (1 - firing_pct) means that firing_pct of values are above it
+            # Convert to float32 for quantile computation (quantile doesn't support bfloat16)
+            chunk_float = chunk.float()
+            quantiles_chunk = torch.quantile(
+                chunk_float, 1.0 - initial_approx_firing_pct, dim=0
+            )
+            # Convert back to original dtype
+            quantiles[i:end_idx] = quantiles_chunk.to(self.dtype)
+
+        # Set bias = threshold - quantile
+        # This ensures that for a fraction initial_approx_firing_pct of examples,
+        # pre_bias + bias > threshold, causing the feature to fire
+        self.b_enc.data = threshold - quantiles
+
+        print(f"Encoder bias initialized!")
+        print(f"  Mean bias: {self.b_enc.mean().item():.4f}")
+        print(f"  Std bias: {self.b_enc.std().item():.4f}")
+        print(f"  Sample biases: {self.b_enc[:10].float().cpu().numpy()}")
+
+        # Reset buffer pointer after initialization
+        buffer.pointer = 0
 
     def return_loss(self, x):
         x = x.to(self.dtype).to(self.cfg["device"])
@@ -255,7 +335,8 @@ class Crosscoder(nn.Module):
 
 class JumpReLUFunction(autograd.Function):
     @staticmethod
-    def forward(ctx, x, threshold, bandwidth):
+    def forward(ctx, x, log_threshold, bandwidth):
+        threshold = log_threshold.exp()
         ctx.save_for_backward(x, threshold, torch.tensor(bandwidth))
         return x * (x > threshold).float()
 
@@ -264,8 +345,9 @@ class JumpReLUFunction(autograd.Function):
         x, threshold, bandwidth_tensor = ctx.saved_tensors
         bandwidth = bandwidth_tensor.item()
         x_grad = (x > threshold).float() * grad_output
+        # Gradient flows back to log_threshold (via chain rule: d/d(log_t) = d/dt * dt/d(log_t) = d/dt * t)
         threshold_grad = (
-            -(1.0 / bandwidth)
+            -(threshold / bandwidth)
             * RectangleFunction.apply((x - threshold) / bandwidth)
             * grad_output
         )
@@ -484,9 +566,7 @@ class Buffer:
         if self.pointer + self.cfg["batch_size"] > len(self.buffer):
             self.refresh()
 
-        batch = self.buffer[
-            self.pointer : self.pointer + self.cfg["batch_size"]
-        ].float()
+        batch = self.buffer[self.pointer : self.pointer + self.cfg["batch_size"]]
         self.pointer += self.cfg["batch_size"]
 
         if self.normalize:
@@ -545,6 +625,14 @@ class Trainer:
         self.total_steps = cfg["total_steps"]
         self.use_wandb = use_wandb
 
+        # Initialize encoder bias based on data distribution (if not resuming from checkpoint)
+        if resume_from is None:
+            self.crosscoder.initialize_b_enc(
+                self.buffer,
+                initial_approx_firing_pct=cfg.get("initial_approx_firing_pct", 0.25),
+                n_tokens=cfg.get("n_tokens_for_bias_init", 5000),
+            )
+
         self.optimizer = torch.optim.Adam(
             self.crosscoder.parameters(),
             lr=cfg["lr"],
@@ -558,7 +646,7 @@ class Trainer:
 
         self.step_counter: int = 0
 
-        # Resume from checkpoint if provided
+        # Resume from checkpoint if provided (do this after bias init check above)
         if resume_from is not None:
             self.load_checkpoint(resume_from)
 
@@ -645,6 +733,11 @@ class Trainer:
         }
 
         self.step_counter += 1
+
+        # Clear CUDA cache every 5 steps to prevent memory fragmentation
+        if self.step_counter % 5 == 0 and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return loss_dict
 
     def log(self, loss_dict):
@@ -681,16 +774,13 @@ class Trainer:
             "b_enc": self.crosscoder.b_enc.data,
             "b_dec": self.crosscoder.b_dec.data,
             "log_threshold": self.crosscoder.log_threshold.data,
-
             # Training state
             "step_counter": self.step_counter,
             "optimizer_state": self.optimizer.state_dict(),
             "scheduler_state": self.scheduler.state_dict(),
-
             # RNG states for reproducibility
             "torch_rng_state": torch.get_rng_state(),
             "numpy_rng_state": np.random.get_state(),
-
             # Config
             "cfg": self.cfg,
         }
@@ -712,7 +802,9 @@ class Trainer:
     def load_checkpoint(self, checkpoint_path):
         """Load complete training checkpoint and restore all states"""
         print(f"Loading checkpoint from: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=self.cfg["device"])
+        checkpoint = torch.load(
+            checkpoint_path, map_location=self.cfg["device"], weights_only=False
+        )
 
         # Restore model weights
         self.crosscoder.W_enc.data = checkpoint["W_enc"]
@@ -727,10 +819,24 @@ class Trainer:
         self.scheduler.load_state_dict(checkpoint["scheduler_state"])
 
         # Restore RNG states for reproducibility
-        torch.set_rng_state(checkpoint["torch_rng_state"])
-        np.random.set_state(checkpoint["numpy_rng_state"])
-        if torch.cuda.is_available() and "cuda_rng_state" in checkpoint:
-            torch.cuda.set_rng_state(checkpoint["cuda_rng_state"])
+        # Wrap in try-except to handle old checkpoints with incompatible RNG format
+        try:
+            torch_rng_state = checkpoint["torch_rng_state"]
+            if not isinstance(torch_rng_state, torch.ByteTensor):
+                torch_rng_state = torch_rng_state.byte()
+            torch.set_rng_state(torch_rng_state)
+
+            np.random.set_state(checkpoint["numpy_rng_state"])
+
+            if torch.cuda.is_available() and "cuda_rng_state" in checkpoint:
+                cuda_rng_state = checkpoint["cuda_rng_state"]
+                if not isinstance(cuda_rng_state, torch.ByteTensor):
+                    cuda_rng_state = cuda_rng_state.byte()
+                torch.cuda.set_rng_state(cuda_rng_state)
+            print("RNG states restored successfully")
+        except (TypeError, RuntimeError) as e:
+            print(f"Warning: Could not restore RNG states from checkpoint: {e}")
+            print("Training will continue but won't have exact reproducibility")
 
         # Set crosscoder's save_dir to the checkpoint's directory
         self.crosscoder.save_dir = Path(checkpoint_path).parent
