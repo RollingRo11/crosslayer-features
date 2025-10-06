@@ -46,7 +46,7 @@ def print_gpu_memory(tag=""):
 
 cc_config = {
     "seed": 11,
-    "batch_size": 4096,
+    "batch_size": 2048,
     "buffer_mult": 24,
     "lr": 5e-5,
     "num_tokens": int(4e8),
@@ -181,23 +181,9 @@ class Crosscoder(nn.Module):
 
     @torch.no_grad()
     def initialize_b_enc(self, buffer, initial_approx_firing_pct=0.25, n_tokens=5000):
-        """
-        Initialize encoder bias based on data distribution to achieve target firing rate.
-
-        This follows the Anthropic January 2025 approach:
-        1. Sample data and compute pre-bias activations (W_enc @ x)
-        2. For each feature, find the quantile that would make it fire the desired fraction of time
-        3. Set bias = threshold - quantile, so that post-bias activations reach threshold
-
-        Args:
-            buffer: Buffer object to sample activations from
-            initial_approx_firing_pct: Target fraction of features to fire (default 0.25 = 25%)
-            n_tokens: Number of tokens to sample for calibration
-        """
         print(f"\nInitializing encoder bias with {n_tokens} tokens...")
         print(f"Target firing percentage: {initial_approx_firing_pct * 100:.1f}%")
 
-        # Collect pre-bias activations
         n_batches = (n_tokens + self.cfg["batch_size"] - 1) // self.cfg["batch_size"]
         pre_bias_list = []
 
@@ -205,7 +191,6 @@ class Crosscoder(nn.Module):
             acts = buffer.next()
             acts = acts.to(dtype=self.dtype, device=self.cfg["device"])
 
-            # Compute pre-bias activations: W_enc @ x (without adding b_enc)
             pre_bias = einops.einsum(
                 acts,
                 self.W_enc,
@@ -217,16 +202,12 @@ class Crosscoder(nn.Module):
             if len(pre_bias_list) * self.cfg["batch_size"] >= n_tokens:
                 break
 
-        # Concatenate all pre-bias activations: shape (n_samples, ae_dim)
         pre_bias_all = torch.cat(pre_bias_list, dim=0)[:n_tokens]
         print(f"Collected pre-bias shape: {pre_bias_all.shape}")
 
-        # Compute quantiles for each feature
-        # We want (1 - initial_approx_firing_pct) quantile because we fire when pre_bias + bias > threshold
         threshold = torch.exp(self.log_threshold)
 
         print("Computing quantiles for each feature...")
-        # Process in chunks to avoid memory issues with large ae_dim
         chunk_size = 4096
         quantiles = torch.empty(
             self.ae_dim, dtype=self.dtype, device=self.cfg["device"]
@@ -238,18 +219,12 @@ class Crosscoder(nn.Module):
             end_idx = min(i + chunk_size, self.ae_dim)
             chunk = pre_bias_all[:, i:end_idx]
 
-            # Quantile at (1 - firing_pct) means that firing_pct of values are above it
-            # Convert to float32 for quantile computation (quantile doesn't support bfloat16)
             chunk_float = chunk.float()
             quantiles_chunk = torch.quantile(
                 chunk_float, 1.0 - initial_approx_firing_pct, dim=0
             )
-            # Convert back to original dtype
             quantiles[i:end_idx] = quantiles_chunk.to(self.dtype)
 
-        # Set bias = threshold - quantile
-        # This ensures that for a fraction initial_approx_firing_pct of examples,
-        # pre_bias + bias > threshold, causing the feature to fire
         self.b_enc.data = threshold - quantiles
 
         print(f"Encoder bias initialized!")
@@ -257,7 +232,6 @@ class Crosscoder(nn.Module):
         print(f"  Std bias: {self.b_enc.std().item():.4f}")
         print(f"  Sample biases: {self.b_enc[:10].float().cpu().numpy()}")
 
-        # Reset buffer pointer after initialization
         buffer.pointer = 0
 
     def return_loss(self, x):
@@ -281,8 +255,7 @@ class Crosscoder(nn.Module):
         sparsity_term = torch.tanh(c * torch.abs(acts) * decoder_norms)
         sparsity_loss = sparsity_term.sum(dim=-1).mean()
 
-        # Pre-act loss: use preacts for smooth gradient flow
-        relu_term = F.relu(torch.exp(self.log_threshold) - acts)
+        relu_term = F.relu(torch.exp(self.log_threshold) - preacts)
         pre_act_loss_term = relu_term * decoder_norms
         pre_act_loss = pre_act_loss_term.sum(dim=-1).mean()
 
@@ -418,7 +391,6 @@ class Buffer:
         )
         self.dataset_iter = iter(self.dataset)
 
-        # Use per-layer normalization as per 2024 crosscoder paper
         estimated_norm_scaling_factors = self.estimate_norm_scaling_factor(batch_size=2)
         self.normalisation_factor = torch.tensor(
             estimated_norm_scaling_factors,
@@ -432,8 +404,6 @@ class Buffer:
     def estimate_norm_scaling_factor(
         self, batch_size, n_batches_for_norm_estimate: int = 100
     ):
-        # Use per-layer scaling factors as per 2024 crosscoder paper:
-        # "We separately normalize the activations of each layer"
         norms_per_layer = [[] for _ in range(self.num_layers)]
 
         token_generator = self.get_tokens_batch_generator(
@@ -515,8 +485,6 @@ class Buffer:
             yield torch.cat(tokens, dim=0)
             batch_count += 1
 
-    # In the Buffer class
-
     @torch.no_grad()
     def refresh(self):
         tokens = self.get_tokens_batch()
@@ -584,7 +552,7 @@ class Buffer:
                 item = next(self.dataset_iter)
             except StopIteration:
                 self.dataset_iter = iter(self.dataset)
-                continue  # Skip to the next iteration to get an item
+                continue
 
             text = item["text"]
             if len(text.strip()) < 50:
@@ -625,7 +593,6 @@ class Trainer:
         self.total_steps = cfg["total_steps"]
         self.use_wandb = use_wandb
 
-        # Initialize encoder bias based on data distribution (if not resuming from checkpoint)
         if resume_from is None:
             self.crosscoder.initialize_b_enc(
                 self.buffer,
@@ -646,7 +613,6 @@ class Trainer:
 
         self.step_counter: int = 0
 
-        # Resume from checkpoint if provided (do this after bias init check above)
         if resume_from is not None:
             self.load_checkpoint(resume_from)
 
@@ -702,6 +668,11 @@ class Trainer:
         clip_grad_norm_(self.crosscoder.parameters(), max_norm=1.0)
 
         self.optimizer.step()
+        with torch.no_grad():
+            w_dec_flat = self.crosscoder.W_dec.view(self.crosscoder.ae_dim, -1)
+            w_dec_flat = F.normalize(w_dec_flat, p=2, dim=1)
+            self.crosscoder.W_dec.data = w_dec_flat.view_as(self.crosscoder.W_dec.data)
+
         self.scheduler.step()
         self.optimizer.zero_grad()
 
