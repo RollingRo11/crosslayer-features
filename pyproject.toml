@@ -25,4 +25,8 @@ dependencies = [
     "jaxtyping>=0.3.3",
     "dataclasses-json>=0.6.7",
     "matplotlib>=3.10.6",
+    "transformer-lens",
 ]
+
+[tool.uv.sources]
+transformer-lens = { git = "https://github.com/TransformerLensOrg/TransformerLens" }
