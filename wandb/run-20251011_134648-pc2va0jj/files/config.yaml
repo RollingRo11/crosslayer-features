@@ -1,0 +1,96 @@
+_wandb:
+    value:
+        cli_version: 0.22.2
+        e:
+            db9uocrn3h8e97o05ojbvuyd7uup59pd:
+                apple:
+                    ecpuCores: 6
+                    gpuCores: 14
+                    memoryGb: 18
+                    name: Apple M3 Pro
+                    pcpuCores: 5
+                    ramTotalBytes: "19327352832"
+                    swapTotalBytes: "13958643712"
+                codePath: crosscoder/train.py
+                codePathLocal: crosscoder/train.py
+                cpu_count: 11
+                cpu_count_logical: 11
+                disk:
+                    /:
+                        total: "494353338368"
+                        used: "466372943872"
+                email: rohan.kathuria@live.com
+                executable: /Users/rohan/Developer/crosslayer-features/.venv/bin/python3
+                git:
+                    commit: 0f642dad132e4a0ac5716e3419cfd74c87288a0d
+                    remote: https://github.com/RollingRo11/crosslayer-features
+                host: Floppy.local
+                memory:
+                    total: "19327352832"
+                os: macOS-26.0-arm64-arm-64bit
+                program: /Users/rohan/Developer/crosslayer-features/crosscoder/train.py
+                python: CPython 3.12.10
+                root: /Users/rohan/Developer/crosslayer-features
+                startedAt: "2025-10-11T17:46:48.409851Z"
+                writerId: db9uocrn3h8e97o05ojbvuyd7uup59pd
+        m: []
+        python_version: 3.12.10
+        t:
+            "1":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 51
+                - 71
+            "2":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 51
+                - 71
+            "3":
+                - 13
+                - 16
+            "4": 3.12.10
+            "5": 0.22.2
+            "6": 4.57.0
+            "12": 0.22.2
+            "13": darwin-arm64
+ae_dim:
+    value: 32768
+batch_size:
+    value: 2048
+buffer_mult:
+    value: 8
+c:
+    value: 4
+device:
+    value: cpu
+init_norm:
+    value: 0.08
+is_jan:
+    value: false
+l_p:
+    value: 3e-06
+l_s:
+    value: 10
+log_interval:
+    value: 100
+lr:
+    value: 5e-05
+model:
+    value: gpt2
+model_batch:
+    value: 32
+optim:
+    value: AdamW
+save_interval:
+    value: 20000
+seed:
+    value: 11
+steps:
+    value: 50000
+verbose:
+    value: true

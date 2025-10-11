@@ -1,6 +1,3 @@
-# rewriting to be less bulky
-
-from pyarrow import SparseCOOTensor
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -12,8 +9,8 @@ import einops
 from datasets import load_dataset
 from pathlib import Path
 import sys
+import wandb
 
-from crosscoder.crosscoder import LossOutput
 
 @dataclass
 class cc_config:
@@ -48,10 +45,12 @@ class cc_config:
     l_p: float = 3e-6
     c: float = 4.0
 
+
 class LossOut(NamedTuple):
     loss: torch.Tensor
     sparsity_loss: torch.Tensor
     recon_loss: torch.Tensor
+
 
 class Crosscoder_Model(nn.Module):
     def __init__(self, cfg: cc_config):
@@ -62,18 +61,13 @@ class Crosscoder_Model(nn.Module):
         self.dtype = cfg.dtype
 
         if cfg.model == "gpt2":
-            self.model_cfg = self.model.config.to_dict()  # type: ignore
             self.resid: int = 768
-            self.model: LanguageModel = LanguageModel(
-                "openai-community/gpt2", device_map="auto"
-            )
-            self.num_layers: int = self.model_cfg["n_layer"]
-        if cfg.model == "gemma2-2b":
-            self.model_cfg = self.model.config.to_dict()  # type: ignore
-            self.model_embd = 2048
-
-        self.num_layers = self.model_cfg["n_layer"]
-        n, m = 0, 0
+            self.num_layers: int = 12
+        elif cfg.model == "gemma2-2b":
+            self.resid = 2048
+            self.num_layers = 32
+        else:
+            raise ValueError(f"Model {cfg.model} not supported")
 
         self.W_enc = nn.Parameter(
             torch.empty(self.num_layers, self.resid, self.ae_dim, dtype=self.dtype)
@@ -83,7 +77,7 @@ class Crosscoder_Model(nn.Module):
             torch.empty(self.ae_dim, self.num_layers, self.resid, dtype=self.dtype)
         )
 
-        n = self.model_embd
+        n = self.resid
         m = self.cfg.ae_dim
         bound = 1.0 / math.sqrt(n)
         scale = n / m
@@ -92,14 +86,14 @@ class Crosscoder_Model(nn.Module):
         self.W_enc.data = (
             einops.rearrange(
                 self.W_dec.data.clone(),
-                "ae_dim num_layers resid -> n_layers resid ae_dim",
+                "ae_dim num_layers resid -> num_layers resid ae_dim",
             )
             * scale
         )
 
         self.b_enc = nn.Parameter(torch.zeros(self.ae_dim, dtype=self.dtype))
         self.b_dec = nn.Parameter(
-            torch.zeros((self.num_layers, self.model_embd), dtype=self.dtype)
+            torch.zeros((self.num_layers, self.resid), dtype=self.dtype)
         )
 
     def encode(self, x):
@@ -124,25 +118,23 @@ class Crosscoder_Model(nn.Module):
         return self.decode(acts)
 
     def get_loss(self, x):
-        acts = self.encode(x).float()
-        reconstructed = self.decode(acts).float()
+        acts = self.encode(x)
+        reconstructed = self.decode(acts)
 
-        squared_diff = (x - reconstructed).pow(2).sum(dim=(-2, -1)).mean()
+        x_float = x.float()
+        reconstructed_float = reconstructed.float()
+        acts_float = acts.float()
+
+        squared_diff = (x_float - reconstructed_float).pow(2).sum(dim=(-2, -1)).mean()
 
         decoder_norms = self.W_dec.norm(dim=-1)
         decoder_norms_summed = decoder_norms.sum(dim=1)
 
-        reg_term = (acts * decoder_norms_summed).sum(dim=-1).mean()
+        reg_term = (acts_float * decoder_norms_summed).sum(dim=-1).mean()
 
         loss = squared_diff + reg_term
 
         return LossOut(loss=loss, sparsity_loss=reg_term, recon_loss=squared_diff)
-
-
-
-
-
-
 
 
 class Buffer:
@@ -203,13 +195,18 @@ class Buffer:
         tokens = self.get_tokens(n_samples).to(self.cfg.device)
 
         with self.model.trace(tokens) as tracer:
-            layer_acts = []
-            for i in range(self.num_layers):
-                acts = get_layer_output(self.model, i, tracer)
-                layer_acts.append(acts)
+            cache = tracer.cache(
+                modules=[self.model.transformer.h[i] for i in range(self.num_layers)]
+            )
+
+        layer_acts = []
+        for i in range(self.num_layers):
+            acts = cache.model.transformer.h[i].output[0]  # [batch, seq, resid]
+            layer_acts.append(acts)
 
         all_acts = torch.stack(layer_acts, dim=2)
 
+        # [batch * seq, layers, resid]
         all_acts = all_acts.reshape(-1, self.num_layers, self.resid)
         self.buffer[: len(all_acts)] = all_acts[: self.buffer_size]
 
@@ -228,4 +225,119 @@ class Buffer:
 
 
 class Trainer:
-    def __init__(self, cfg):
+    def __init__(self, cfg: cc_config):
+        self.cfg = cfg
+        torch.manual_seed(cfg.seed)
+
+        # Initialize model
+        print("Initializing crosscoder model...")
+        self.crosscoder = Crosscoder_Model(cfg).to(cfg.device)
+
+        # Initialize language model for buffer
+        print(f"Loading {cfg.model}...")
+        if cfg.model == "gpt2":
+            self.lm = LanguageModel("openai-community/gpt2", device_map=cfg.device)
+        elif cfg.model == "gemma2-2b":
+            self.lm = LanguageModel("google/gemma-2-2b", device_map=cfg.device)
+        else:
+            raise ValueError(f"Model {cfg.model} not supported")
+
+        # Initialize buffer
+        print("Initializing buffer...")
+        self.buffer = Buffer(cfg, self.lm)
+
+        # Initialize optimizer
+        if cfg.optim == "AdamW":
+            self.optimizer = torch.optim.AdamW(
+                self.crosscoder.parameters(), lr=cfg.lr, betas=(0.9, 0.999)
+            )
+        else:
+            raise ValueError(f"Optimizer {cfg.optim} not supported")
+
+        # Initialize wandb
+        wandb.init(
+            project="crosscoder",
+            config=cfg.__dict__,
+            name=f"{cfg.model}_ae{cfg.ae_dim}",
+        )
+
+        self.step = 0
+
+    def calculate_sparsity(self, acts: torch.Tensor) -> float:
+        """Calculate L0 sparsity (percentage of active features)"""
+        # acts shape: [batch, ae_dim]
+        active = (acts > 0).float().sum(dim=-1).mean()
+        return active.item()
+
+    def train_step(self):
+        """Single training step"""
+        self.crosscoder.train()
+
+        # Get batch from buffer
+        batch = self.buffer.next()  # [batch_size, num_layers, resid]
+
+        # Forward pass and compute loss
+        loss_out = self.crosscoder.get_loss(batch)
+
+        # Backward pass
+        self.optimizer.zero_grad()
+        loss_out.loss.backward()
+        self.optimizer.step()
+
+        # Calculate sparsity for logging
+        with torch.no_grad():
+            acts = self.crosscoder.encode(batch)
+            sparsity = self.calculate_sparsity(acts)
+
+        return {
+            "loss": loss_out.loss.item(),
+            "recon_loss": loss_out.recon_loss.item(),
+            "sparsity_loss": loss_out.sparsity_loss.item(),
+            "l0_sparsity": sparsity,
+        }
+
+    def train(self):
+        print(f"Starting training for {self.cfg.steps} steps...")
+
+        for step in range(self.cfg.steps):
+            self.step = step
+
+            # Training step
+            metrics = self.train_step()
+
+            # Logging
+            if step % self.cfg.log_interval == 0:
+                wandb.log(metrics, step=step)
+
+                if self.cfg.verbose:
+                    print(
+                        f"Step {step}/{self.cfg.steps} | "
+                        f"Loss: {metrics['loss']:.4f} | "
+                        f"Recon: {metrics['recon_loss']:.4f} | "
+                        f"Sparsity Loss: {metrics['sparsity_loss']:.4f} | "
+                        f"L0: {metrics['l0_sparsity']:.1f}"
+                    )
+
+            if step % self.cfg.save_interval == 0 and step > 0:
+                self.save_checkpoint(step)
+
+        print("Training complete!")
+        wandb.finish()
+
+    def save_checkpoint(self, step: int):
+        save_dir = Path("checkpoints")
+        save_dir.mkdir(exist_ok=True)
+
+        checkpoint_path = save_dir / f"crosscoder_step_{step}.pt"
+
+        torch.save(
+            {
+                "step": step,
+                "model_state_dict": self.crosscoder.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "config": self.cfg,
+            },
+            checkpoint_path,
+        )
+
+        print(f"Saved checkpoint to {checkpoint_path}")

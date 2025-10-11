@@ -1,0 +1,37 @@
+{
+  "os":  "macOS-26.0-arm64-arm-64bit",
+  "python":  "CPython 3.12.10",
+  "startedAt":  "2025-10-11T17:46:48.409851Z",
+  "program":  "/Users/rohan/Developer/crosslayer-features/crosscoder/train.py",
+  "codePath":  "crosscoder/train.py",
+  "codePathLocal":  "crosscoder/train.py",
+  "git":  {
+    "remote":  "https://github.com/RollingRo11/crosslayer-features",
+    "commit":  "0f642dad132e4a0ac5716e3419cfd74c87288a0d"
+  },
+  "email":  "rohan.kathuria@live.com",
+  "root":  "/Users/rohan/Developer/crosslayer-features",
+  "host":  "Floppy.local",
+  "executable":  "/Users/rohan/Developer/crosslayer-features/.venv/bin/python3",
+  "cpu_count":  11,
+  "cpu_count_logical":  11,
+  "disk":  {
+    "/":  {
+      "total":  "494353338368",
+      "used":  "466372943872"
+    }
+  },
+  "memory":  {
+    "total":  "19327352832"
+  },
+  "apple":  {
+    "name":  "Apple M3 Pro",
+    "ecpuCores":  6,
+    "pcpuCores":  5,
+    "gpuCores":  14,
+    "memoryGb":  18,
+    "swapTotalBytes":  "13958643712",
+    "ramTotalBytes":  "19327352832"
+  },
+  "writerId":  "db9uocrn3h8e97o05ojbvuyd7uup59pd"
+}
