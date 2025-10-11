@@ -1,19 +1,19 @@
 # rewriting to be less bulky
 
+from pyarrow import SparseCOOTensor
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from dataclasses import dataclass
 import math
+from typing import NamedTuple
 from nnsight import LanguageModel
 import einops
 from datasets import load_dataset
 from pathlib import Path
 import sys
 
-sys.path.append(str(Path(__file__).parent.parent / "sae_vis" / "sae_vis"))
-from model_utils import get_layer_output
-
+from crosscoder.crosscoder import LossOutput
 
 @dataclass
 class cc_config:
@@ -48,6 +48,10 @@ class cc_config:
     l_p: float = 3e-6
     c: float = 4.0
 
+class LossOut(NamedTuple):
+    loss: torch.Tensor
+    sparsity_loss: torch.Tensor
+    recon_loss: torch.Tensor
 
 class Crosscoder_Model(nn.Module):
     def __init__(self, cfg: cc_config):
@@ -121,10 +125,24 @@ class Crosscoder_Model(nn.Module):
 
     def get_loss(self, x):
         acts = self.encode(x).float()
-
         reconstructed = self.decode(acts).float()
 
-        squared_diff = (reconstructed.float - acts).pow(2)
+        squared_diff = (x - reconstructed).pow(2).sum(dim=(-2, -1)).mean()
+
+        decoder_norms = self.W_dec.norm(dim=-1)
+        decoder_norms_summed = decoder_norms.sum(dim=1)
+
+        reg_term = (acts * decoder_norms_summed).sum(dim=-1).mean()
+
+        loss = squared_diff + reg_term
+
+        return LossOut(loss=loss, sparsity_loss=reg_term, recon_loss=squared_diff)
+
+
+
+
+
+
 
 
 class Buffer:
@@ -136,7 +154,6 @@ class Buffer:
         self.resid = self.modelcfg["n_embd"]
         self.context = 1024
 
-        # Buffer setup
         self.buffer_size = self.cfg.batch_size * self.cfg.buffer_mult
         self.buffer = torch.zeros(
             (self.buffer_size, self.num_layers, self.resid),
@@ -145,7 +162,6 @@ class Buffer:
         )
         self.pointer = 0
 
-        # Load Pile dataset
         self.dataset = load_dataset(
             "monology/pile-uncopyrighted", split="train", streaming=True
         )
@@ -180,28 +196,23 @@ class Buffer:
 
     @torch.no_grad()
     def refresh(self):
-        """Refill buffer with activations"""
         print("Refreshing buffer...")
         self.pointer = 0
         n_samples = self.buffer_size // self.context
 
         tokens = self.get_tokens(n_samples).to(self.cfg.device)
 
-        # Get activations using nnsight caching
         with self.model.trace(tokens) as tracer:
             layer_acts = []
             for i in range(self.num_layers):
                 acts = get_layer_output(self.model, i, tracer)
                 layer_acts.append(acts)
 
-        # Stack: [batch, seq, num_layers, resid]
         all_acts = torch.stack(layer_acts, dim=2)
 
-        # Flatten and store: [batch*seq, num_layers, resid]
         all_acts = all_acts.reshape(-1, self.num_layers, self.resid)
         self.buffer[: len(all_acts)] = all_acts[: self.buffer_size]
 
-        # Shuffle
         perm = torch.randperm(self.buffer_size, device=self.cfg.device)
         self.buffer = self.buffer[perm]
 
@@ -214,3 +225,7 @@ class Buffer:
         batch = self.buffer[self.pointer : self.pointer + self.cfg.batch_size]
         self.pointer += self.cfg.batch_size
         return batch
+
+
+class Trainer:
+    def __init__(self, cfg):
