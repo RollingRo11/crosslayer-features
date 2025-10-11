@@ -1,16 +1,7 @@
 import argparse
 import torch
 from pathlib import Path
-import importlib.util
-
-spec = importlib.util.spec_from_file_location(
-    "new_crosscoder", Path(__file__).parent / "new-crosscoder.py"
-)
-new_crosscoder = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(new_crosscoder)
-
-cc_config = new_crosscoder.cc_config
-Trainer = new_crosscoder.Trainer
+from newcrosscoder import cc_config, Trainer
 
 
 def parse_args():
