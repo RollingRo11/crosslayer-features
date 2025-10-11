@@ -197,11 +197,11 @@ class Buffer:
         with self.model.trace(tokens) as tracer:
             cache = tracer.cache(
                 modules=[self.model.transformer.h[i] for i in range(self.num_layers)]
-            )
+            ).save()
 
         layer_acts = []
         for i in range(self.num_layers):
-            acts = cache.model.transformer.h[i].output[0]  # [batch, seq, resid]
+            acts = cache[f"model.transformer.h.{i}"].output[0]  # [batch, seq, resid]
             layer_acts.append(acts)
 
         all_acts = torch.stack(layer_acts, dim=2)
