@@ -1,7 +1,18 @@
+# rewriting to be less bulky
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from dataclasses import dataclass
+import math
+from nnsight import LanguageModel
+import einops
+from datasets import load_dataset
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).parent.parent / "sae_vis" / "sae_vis"))
+from model_utils import get_layer_output
 
 
 @dataclass
@@ -22,6 +33,9 @@ class cc_config:
     log_interval: int = 100
     save_interval: int = 20000
 
+    # buffer
+    buffer_mult: int = 8
+
     # other
     dtype = torch.bfloat16
     device: str = "cuda"
@@ -37,23 +51,166 @@ class cc_config:
 
 class Crosscoder_Model(nn.Module):
     def __init__(self, cfg: cc_config):
+        super().__init__()
         self.cfg: cc_config = cfg
-        self.model: str = cfg.model
+        self.model_name: str = cfg.model
         self.ae_dim: int = cfg.ae_dim
+        self.dtype = cfg.dtype
 
         if cfg.model == "gpt2":
-            self.model_embd = 768
+            self.model_cfg = self.model.config.to_dict()  # type: ignore
+            self.resid: int = 768
+            self.model: LanguageModel = LanguageModel(
+                "openai-community/gpt2", device_map="auto"
+            )
+            self.num_layers: int = self.model_cfg["n_layer"]
         if cfg.model == "gemma2-2b":
+            self.model_cfg = self.model.config.to_dict()  # type: ignore
             self.model_embd = 2048
 
+        self.num_layers = self.model_cfg["n_layer"]
         n, m = 0, 0
 
-        if self.cfg.is_jan:
-            n = self.model_embd
-            m = self.cfg.ae_dim
+        self.W_enc = nn.Parameter(
+            torch.empty(self.num_layers, self.resid, self.ae_dim, dtype=self.dtype)
+        )
 
-        self.W_dec =
+        self.W_dec = nn.Parameter(
+            torch.empty(self.ae_dim, self.num_layers, self.resid, dtype=self.dtype)
+        )
+
+        n = self.model_embd
+        m = self.cfg.ae_dim
+        bound = 1.0 / math.sqrt(n)
+        scale = n / m
+        torch.nn.init.uniform_(self.W_dec, -bound, bound)
+
+        self.W_enc.data = (
+            einops.rearrange(
+                self.W_dec.data.clone(),
+                "ae_dim num_layers resid -> n_layers resid ae_dim",
+            )
+            * scale
+        )
+
+        self.b_enc = nn.Parameter(torch.zeros(self.ae_dim, dtype=self.dtype))
+        self.b_dec = nn.Parameter(
+            torch.zeros((self.num_layers, self.model_embd), dtype=self.dtype)
+        )
+
+    def encode(self, x):
+        x_enc = einops.einsum(
+            x, self.W_enc, "... n_layers resid, n_layers resid ae_dim -> ... ae_dim"
+        )
+
+        acts = F.relu(x_enc + self.b_enc)
+
+        return acts
+
+    def decode(self, acts):
+        acts_dec = einops.einsum(
+            acts,
+            self.W_dec,
+            "... ae_dim, ae_dim n_layers resid -> ... n_layers resid",
+        )
+        return acts_dec + self.b_dec
+
+    def forward(self, x):
+        acts = self.encode(x)
+        return self.decode(acts)
+
+    def get_loss(self, x):
+        acts = self.encode(x).float()
+
+        reconstructed = self.decode(acts).float()
+
+        squared_diff = (reconstructed.float - acts).pow(2)
 
 
+class Buffer:
+    def __init__(self, cfg: cc_config, model: LanguageModel):
+        self.model = model
+        self.cfg = cfg
+        self.modelcfg = self.model.config.to_dict()
+        self.num_layers = self.modelcfg["n_layer"]
+        self.resid = self.modelcfg["n_embd"]
+        self.context = 1024
 
-class Buffer(nn.Module):
+        # Buffer setup
+        self.buffer_size = self.cfg.batch_size * self.cfg.buffer_mult
+        self.buffer = torch.zeros(
+            (self.buffer_size, self.num_layers, self.resid),
+            dtype=self.cfg.dtype,
+            device=self.cfg.device,
+        )
+        self.pointer = 0
+
+        # Load Pile dataset
+        self.dataset = load_dataset(
+            "monology/pile-uncopyrighted", split="train", streaming=True
+        )
+        self.dataset_iter = iter(self.dataset)
+
+        self.refresh()
+
+    def get_tokens(self, n_samples):
+        """Get tokenized batch"""
+        tokens = []
+        for _ in range(n_samples):
+            try:
+                item = next(self.dataset_iter)
+            except StopIteration:
+                self.dataset_iter = iter(self.dataset)
+                item = next(self.dataset_iter)
+
+            text = item["text"]
+            if len(text.strip()) < 50:
+                continue
+
+            toks = self.model.tokenizer.encode(
+                text,
+                return_tensors="pt",
+                max_length=self.context,
+                truncation=True,
+                padding="max_length",
+            )
+            tokens.append(toks)
+
+        return torch.cat(tokens, dim=0)
+
+    @torch.no_grad()
+    def refresh(self):
+        """Refill buffer with activations"""
+        print("Refreshing buffer...")
+        self.pointer = 0
+        n_samples = self.buffer_size // self.context
+
+        tokens = self.get_tokens(n_samples).to(self.cfg.device)
+
+        # Get activations using nnsight caching
+        with self.model.trace(tokens) as tracer:
+            layer_acts = []
+            for i in range(self.num_layers):
+                acts = get_layer_output(self.model, i, tracer)
+                layer_acts.append(acts)
+
+        # Stack: [batch, seq, num_layers, resid]
+        all_acts = torch.stack(layer_acts, dim=2)
+
+        # Flatten and store: [batch*seq, num_layers, resid]
+        all_acts = all_acts.reshape(-1, self.num_layers, self.resid)
+        self.buffer[: len(all_acts)] = all_acts[: self.buffer_size]
+
+        # Shuffle
+        perm = torch.randperm(self.buffer_size, device=self.cfg.device)
+        self.buffer = self.buffer[perm]
+
+    @torch.no_grad()
+    def next(self):
+        """Get next batch"""
+        if self.pointer + self.cfg.batch_size > self.buffer_size:
+            self.refresh()
+
+        batch = self.buffer[self.pointer : self.pointer + self.cfg.batch_size]
+        self.pointer += self.cfg.batch_size
+        return batch

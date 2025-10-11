@@ -26,6 +26,9 @@ dependencies = [
     "dataclasses-json>=0.6.7",
     "matplotlib>=3.10.6",
     "transformer-lens",
+    "jupyter>=1.1.1",
+    "jupyterlab>=4.4.9",
+    "ipywidgets>=8.1.7",
 ]
 
 [tool.uv.sources]
