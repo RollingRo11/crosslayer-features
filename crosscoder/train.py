@@ -1,10 +1,8 @@
 import argparse
 import torch
-import sys
 from pathlib import Path
 import importlib.util
 
-# Import from file with hyphen in name
 spec = importlib.util.spec_from_file_location(
     "new_crosscoder", Path(__file__).parent / "new-crosscoder.py"
 )

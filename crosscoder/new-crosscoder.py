@@ -8,7 +8,6 @@ from nnsight import LanguageModel
 import einops
 from datasets import load_dataset
 from pathlib import Path
-import sys
 import wandb
 
 
@@ -170,6 +169,9 @@ class Buffer:
         )
         self.dataset_iter = iter(self.dataset)
 
+        self.layer_means = None
+        self.layer_stds = None
+
         self.refresh()
 
     def get_tokens(self, n_samples):
@@ -214,6 +216,19 @@ class Buffer:
         all_acts = torch.stack(layer_acts, dim=2)
 
         all_acts = all_acts.reshape(-1, self.num_layers, self.resid)
+
+        if self.layer_means is None:
+            self.layer_means = all_acts.mean(dim=0, keepdim=True)
+            self.layer_stds = all_acts.std(dim=0, keepdim=True) + 1e-8
+            print(
+                f"  Mean range: [{self.layer_means.min():.4f}, {self.layer_means.max():.4f}]"
+            )
+            print(
+                f"  Std range: [{self.layer_stds.min():.4f}, {self.layer_stds.max():.4f}]"
+            )
+
+        all_acts = (all_acts - self.layer_means) / self.layer_stds
+
         self.buffer[: len(all_acts)] = all_acts[: self.buffer_size]
 
         perm = torch.randperm(self.buffer_size, device=self.cfg.device)
@@ -271,21 +286,17 @@ class Trainer:
         return active.item()
 
     def train_step(self):
-        """Single training step"""
         self.crosscoder.train()
 
         batch = self.buffer.next()  # [batch_size, num_layers, resid]
 
-        # Forward pass and compute loss
         debug = self.step == 0
         loss_out = self.crosscoder.get_loss(batch, debug=debug)
 
-        # Backward pass
         self.optimizer.zero_grad()
         loss_out.loss.backward()
         self.optimizer.step()
 
-        # Calculate sparsity for logging
         with torch.no_grad():
             acts = self.crosscoder.encode(batch)
             sparsity = self.calculate_sparsity(acts)
@@ -303,10 +314,8 @@ class Trainer:
         for step in range(self.cfg.steps):
             self.step = step
 
-            # Training step
             metrics = self.train_step()
 
-            # Logging
             if step % self.cfg.log_interval == 0:
                 wandb.log(metrics, step=step)
 
