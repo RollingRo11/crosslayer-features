@@ -117,9 +117,14 @@ class Crosscoder_Model(nn.Module):
         acts = self.encode(x)
         return self.decode(acts)
 
-    def get_loss(self, x):
+    def get_loss(self, x, debug=False):
         acts = self.encode(x)
         reconstructed = self.decode(acts)
+
+        if debug:
+            print(f"Input x shape: {x.shape}")
+            print(f"Acts shape: {acts.shape}")
+            print(f"Reconstructed shape: {reconstructed.shape}")
 
         x_float = x.float()
         reconstructed_float = reconstructed.float()
@@ -131,6 +136,12 @@ class Crosscoder_Model(nn.Module):
         decoder_norms_summed = decoder_norms.sum(dim=1)
 
         reg_term = (acts_float * decoder_norms_summed).sum(dim=-1).mean()
+
+        if debug:
+            print(f"Squared diff (recon loss): {squared_diff.item():.4f}")
+            print(f"Reg term (sparsity loss): {reg_term.item():.4f}")
+            print(f"decoder_norms shape: {decoder_norms.shape}")
+            print(f"decoder_norms_summed shape: {decoder_norms_summed.shape}")
 
         loss = squared_diff + reg_term
 
@@ -200,9 +211,8 @@ class Buffer:
                 for i in range(self.num_layers)
             ]
 
-        all_acts = torch.stack(layer_acts, dim=1)
+        all_acts = torch.stack(layer_acts, dim=2)
 
-        # [batch * seq, layers, resid]
         all_acts = all_acts.reshape(-1, self.num_layers, self.resid)
         self.buffer[: len(all_acts)] = all_acts[: self.buffer_size]
 
@@ -225,11 +235,9 @@ class Trainer:
         self.cfg = cfg
         torch.manual_seed(cfg.seed)
 
-        # Initialize model
         print("Initializing crosscoder model...")
         self.crosscoder = Crosscoder_Model(cfg).to(cfg.device)
 
-        # Initialize language model for buffer
         print(f"Loading {cfg.model}...")
         if cfg.model == "gpt2":
             self.lm = LanguageModel("openai-community/gpt2", device_map=cfg.device)
@@ -238,11 +246,9 @@ class Trainer:
         else:
             raise ValueError(f"Model {cfg.model} not supported")
 
-        # Initialize buffer
         print("Initializing buffer...")
         self.buffer = Buffer(cfg, self.lm)
 
-        # Initialize optimizer
         if cfg.optim == "AdamW":
             self.optimizer = torch.optim.AdamW(
                 self.crosscoder.parameters(), lr=cfg.lr, betas=(0.9, 0.999)
@@ -261,7 +267,6 @@ class Trainer:
 
     def calculate_sparsity(self, acts: torch.Tensor) -> float:
         """Calculate L0 sparsity (percentage of active features)"""
-        # acts shape: [batch, ae_dim]
         active = (acts > 0).float().sum(dim=-1).mean()
         return active.item()
 
@@ -269,11 +274,11 @@ class Trainer:
         """Single training step"""
         self.crosscoder.train()
 
-        # Get batch from buffer
         batch = self.buffer.next()  # [batch_size, num_layers, resid]
 
         # Forward pass and compute loss
-        loss_out = self.crosscoder.get_loss(batch)
+        debug = self.step == 0
+        loss_out = self.crosscoder.get_loss(batch, debug=debug)
 
         # Backward pass
         self.optimizer.zero_grad()
