@@ -194,17 +194,13 @@ class Buffer:
 
         tokens = self.get_tokens(n_samples).to(self.cfg.device)
 
-        with self.model.trace(tokens) as tracer:
-            cache = tracer.cache(
-                modules=[self.model.transformer.h[i] for i in range(self.num_layers)]
-            ).save()
+        with self.model.trace(tokens):
+            layer_acts = [
+                self.model.transformer.h[i].output[0].save()
+                for i in range(self.num_layers)
+            ]
 
-        layer_acts = []
-        for i in range(self.num_layers):
-            acts = cache[f"model.transformer.h.{i}"].output[0]  # [batch, seq, resid]
-            layer_acts.append(acts)
-
-        all_acts = torch.stack(layer_acts, dim=2)
+        all_acts = torch.stack(layer_acts, dim=1)
 
         # [batch * seq, layers, resid]
         all_acts = all_acts.reshape(-1, self.num_layers, self.resid)
