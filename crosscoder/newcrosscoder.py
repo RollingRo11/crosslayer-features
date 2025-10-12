@@ -18,7 +18,7 @@ class cc_config:
     model: str = "gpt2"
     ae_dim: int = 2**15
     model_batch: int = 128
-    init_norm: float = 0.08
+    init_norm: float = 0.008
 
     # Train
     optim: str = "AdamW"
@@ -26,23 +26,21 @@ class cc_config:
     steps: int = 50000
     batch_size: int = 2048
     warmup_steps: int = 5000
-    l1_coeff: float = 2
+    l1_coeff: float = 0.8
 
     # wandb
     log_interval: int = 100
     save_interval: int = 5000
 
     # buffer
-    buffer_mult: int = 8
+    buffer_mult: int = 64
 
     # other
     dtype = torch.float32
     device: str = "cuda"
-    seed: int = 63
-    verbose: bool = True
+    seed: int = 721
 
     # anthropic jan 2025 update config:
-    is_jan: bool = False  # are we using the Anthropic Jan 2025 update?
     l_s: float = 10
     l_p: float = 3e-6
     c: float = 4.0
@@ -52,6 +50,41 @@ class LossOut(NamedTuple):
     loss: torch.Tensor
     sparsity_loss: torch.Tensor
     recon_loss: torch.Tensor
+
+
+class JumpReLUFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, log_threshold, bandwidth):
+        threshold = log_threshold.exp()
+        ctx.save_for_backward(x, threshold, torch.tensor(bandwidth))
+        return x * (x > threshold).float()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, threshold, bandwidth_tensor = ctx.saved_tensors
+        bandwidth = bandwidth_tensor.item()
+        x_grad = (x > threshold).float() * grad_output
+
+        threshold_grad = (
+            -(threshold / bandwidth)
+            * RectangleFunction.apply((x - threshold) / bandwidth)
+            * grad_output
+        )
+        return x_grad, threshold_grad, None
+
+
+class RectangleFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        ctx.save_for_backward(x)
+        return ((x > -0.5) & (x < 0.5)).float()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (x,) = ctx.saved_tensors
+        grad_input = grad_output.clone()
+        grad_input[(x <= -0.5) | (x >= 0.5)] = 0
+        return grad_input
 
 
 class Crosscoder_Model(nn.Module):
@@ -79,25 +112,9 @@ class Crosscoder_Model(nn.Module):
             torch.empty(self.ae_dim, self.num_layers, self.resid, dtype=self.dtype)
         )
 
-        # n = self.resid
-        # m = self.cfg.ae_dim
-        # bound = 1.0 / math.sqrt(n)
-        # scale = n / m
-        # torch.nn.init.uniform_(self.W_dec, -bound, bound)
-
-        # self.W_enc.data = (
-        #     einops.rearrange(
-        #         self.W_dec.data.clone(),
-        #         "ae_dim num_layers resid -> num_layers resid ae_dim",
-        #     )
-        #     * scale
-        # )
-        #
-        torch.nn.init.normal_(self.W_dec, std=0.1)  # Start from a normal distribution
+        torch.nn.init.normal_(self.W_dec, std=0.1)
         self.W_dec.data = (
-            self.W_dec.data
-            / self.W_dec.data.norm(dim=-1, keepdim=True)
-            * cfg.init_norm  # Use a value like 0.08 from your config
+            self.W_dec.data / self.W_dec.data.norm(dim=-1, keepdim=True) * cfg.init_norm
         )
 
         effective_fan_in = self.num_layers * self.resid
@@ -247,7 +264,6 @@ class Buffer:
 
     @torch.no_grad()
     def next(self):
-        """Get next batch"""
         if self.pointer + self.cfg.batch_size > self.buffer_size:
             self.refresh()
 
@@ -261,7 +277,6 @@ class Trainer:
         self.cfg = cfg
         torch.manual_seed(cfg.seed)
 
-        # Determine run number
         self.run_dir = self._get_next_run_dir()
         print(f"Saving checkpoints to: {self.run_dir}")
 
@@ -391,15 +406,13 @@ class Trainer:
             if step % self.cfg.log_interval == 0:
                 wandb.log(metrics, step=step)
 
-                if self.cfg.verbose:
-                    print(
-                        f"Step {step}/{self.cfg.steps} | "
-                        f"Loss: {metrics['loss']:.4f} | "
-                        f"Recon: {metrics['recon_loss']:.4f} | "
-                        f"Sparsity Loss: {metrics['sparsity_loss']:.4f} | "
-                        f"L0: {metrics['l0_sparsity']:.1f} | "
-                        f"Dead Features: {metrics['dead_features']:.1f}",
-                    )
+                print(
+                    f"Step {step}/{self.cfg.steps} | "
+                    f"Loss: {metrics['loss']:.4f} | "
+                    f"Recon: {metrics['recon_loss']:.4f} | "
+                    f"Sparsity Loss: {metrics['sparsity_loss']:.4f} | "
+                    f"L0: {metrics['l0_sparsity']:.1f} | "
+                    f"Dead Features: {metrics['dead_features']:.1f}",
 
             if step % self.cfg.save_interval == 0 and step > 0:
                 self.save_checkpoint(step)
