@@ -9,6 +9,7 @@ import einops
 from datasets import load_dataset
 from pathlib import Path
 import wandb
+from torch.nn.utils import clip_grad_norm_
 
 
 @dataclass
@@ -304,7 +305,6 @@ class Trainer:
         if not existing_runs:
             run_num = 0
         else:
-            # Extract run numbers and find the maximum
             run_numbers = []
             for run_dir in existing_runs:
                 try:
@@ -325,6 +325,12 @@ class Trainer:
             return step / self.cfg.warmup_steps
         return 1.0
 
+    def get_l1_coeff(self):
+        if self.step_counter < 0.05 * self.total_steps:
+            return self.cfg["l1_coeff"] * self.step_counter / (0.05 * self.total_steps)
+        else:
+            return self.cfg["l1_coeff"]
+
     def calculate_sparsity(self, acts: torch.Tensor):
         active = (acts > 0).float().sum(dim=-1).mean()
         return active.item()
@@ -340,9 +346,11 @@ class Trainer:
 
         debug = self.step == 0
         loss_out = self.crosscoder.get_loss(batch, debug=debug)
+        loss = loss_out.recon_loss + self.get_l1_coeff() * loss_out.sparsity_loss
 
         self.optimizer.zero_grad()
-        loss_out.loss.backward()
+        loss.backward()
+        clip_grad_norm_(self.crosscoder.parameters(), max_norm=1.0)
         self.optimizer.step()
         self.scheduler.step()
 
@@ -352,12 +360,13 @@ class Trainer:
             dead_features = self.calculate_dead_features(acts)
 
         return {
-            "loss": loss_out.loss.item(),
+            "loss": loss.item(),
             "recon_loss": loss_out.recon_loss.item(),
             "sparsity_loss": loss_out.sparsity_loss.item(),
             "l0_sparsity": sparsity,
             "dead_features": dead_features,
             "lr": self.scheduler.get_last_lr()[0],
+            "l1_coeff": self.get_l1_coeff().item(),
         }
 
     def train(self):
