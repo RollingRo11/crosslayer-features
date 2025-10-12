@@ -402,7 +402,7 @@ class Trainer:
 
     def save_checkpoint(self, step: int):
         print("Saving checkpoint...")
-        checkpoint_path = self.run_dir / f"run_{self.run_id}/crosscoder_step_{step}.pt"
+        checkpoint_path = self.run_dir / f"crosscoder_step_{step}.pt"
 
         torch.save(
             {
