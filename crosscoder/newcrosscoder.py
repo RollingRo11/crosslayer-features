@@ -16,7 +16,7 @@ class cc_config:
     # crosscoder config:
     model: str = "gpt2"
     ae_dim: int = 2**15
-    model_batch: int = 32
+    model_batch: int = 128
     init_norm: float = 0.08
 
     # Train
@@ -24,13 +24,14 @@ class cc_config:
     lr: float = 5e-5
     steps: int = 50000
     batch_size: int = 2048
+    warmup_steps: int = 5000
 
     # wandb
     log_interval: int = 100
     save_interval: int = 20000
 
     # buffer
-    buffer_mult: int = 8
+    buffer_mult: int = 32
 
     # other
     dtype = torch.bfloat16
@@ -275,7 +276,10 @@ class Trainer:
         else:
             raise ValueError(f"Optimizer {cfg.optim} not supported")
 
-        # Initialize wandb
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(
+            self.optimizer, lr_lambda=lambda step: self._get_lr_multiplier(step)
+        )
+
         wandb.init(
             project="crosscoder",
             config=cfg.__dict__,
@@ -316,6 +320,11 @@ class Trainer:
 
         return run_dir
 
+    def _get_lr_multiplier(self, step: int) -> float:
+        if step < self.cfg.warmup_steps:
+            return step / self.cfg.warmup_steps
+        return 1.0
+
     def calculate_sparsity(self, acts: torch.Tensor):
         active = (acts > 0).float().sum(dim=-1).mean()
         return active.item()
@@ -335,6 +344,7 @@ class Trainer:
         self.optimizer.zero_grad()
         loss_out.loss.backward()
         self.optimizer.step()
+        self.scheduler.step()
 
         with torch.no_grad():
             acts = self.crosscoder.encode(batch)
@@ -347,6 +357,7 @@ class Trainer:
             "sparsity_loss": loss_out.sparsity_loss.item(),
             "l0_sparsity": sparsity,
             "dead_features": dead_features,
+            "lr": self.scheduler.get_last_lr()[0],
         }
 
     def train(self):
