@@ -31,6 +31,18 @@ def parse_args():
         "--batch_size", type=int, default=None, help="Training batch size"
     )
     parser.add_argument("--optim", type=str, default=None, help="Optimizer")
+    parser.add_argument(
+        "--warmup_steps", type=int, default=None, help="Number of warmup steps"
+    )
+    parser.add_argument(
+        "--l1_coeff", type=float, default=None, help="L1 sparsity coefficient"
+    )
+    parser.add_argument(
+        "--l_s", type=float, default=None, help="Sparsity loss coefficient"
+    )
+    parser.add_argument(
+        "--init_norm", type=float, default=None, help="Decoder initialization norm"
+    )
 
     # Logging and saving
     parser.add_argument(
@@ -93,6 +105,14 @@ def main():
         cfg.seed = args.seed
     if args.no_verbose:
         cfg.verbose = False
+    if args.warmup_steps is not None:
+        cfg.warmup_steps = args.warmup_steps
+    if args.l1_coeff is not None:
+        cfg.l1_coeff = args.l1_coeff
+    if args.l_s is not None:
+        cfg.l_s = args.l_s
+    if args.init_norm is not None:
+        cfg.init_norm = args.init_norm
 
     print("=" * 60)
     print("Training Crosscoder with configuration:")
