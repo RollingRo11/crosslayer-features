@@ -10,49 +10,49 @@ def parse_args():
     parser.add_argument(
         "--model",
         type=str,
-        default="gpt2",
+        default=None,
         choices=["gpt2", "gemma2-2b"],
         help="Model to train on",
     )
     parser.add_argument(
         "--ae_dim",
         type=int,
-        default=2**15,
-        help="Autoencoder dimension (default: 32768)",
+        default=None,
+        help="Autoencoder dimension",
     )
-    parser.add_argument("--model_batch", type=int, default=32, help="Model batch size")
+    parser.add_argument("--model_batch", type=int, default=None, help="Model batch size")
 
     # Training config
-    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=None, help="Learning rate")
     parser.add_argument(
-        "--steps", type=int, default=50000, help="Number of training steps"
+        "--steps", type=int, default=None, help="Number of training steps"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=2048, help="Training batch size"
+        "--batch_size", type=int, default=None, help="Training batch size"
     )
-    parser.add_argument("--optim", type=str, default="AdamW", help="Optimizer")
+    parser.add_argument("--optim", type=str, default=None, help="Optimizer")
 
     # Logging and saving
     parser.add_argument(
-        "--log_interval", type=int, default=100, help="Steps between logging"
+        "--log_interval", type=int, default=None, help="Steps between logging"
     )
     parser.add_argument(
-        "--save_interval", type=int, default=20000, help="Steps between checkpoints"
+        "--save_interval", type=int, default=None, help="Steps between checkpoints"
     )
 
     # Buffer config
     parser.add_argument(
-        "--buffer_mult", type=int, default=8, help="Buffer size multiplier"
+        "--buffer_mult", type=int, default=None, help="Buffer size multiplier"
     )
 
     # Other
     parser.add_argument(
         "--device",
         type=str,
-        default="cuda" if torch.cuda.is_available() else "cpu",
+        default=None,
         help="Device to use",
     )
-    parser.add_argument("--seed", type=int, default=11, help="Random seed")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument(
         "--no_verbose", action="store_true", help="Disable verbose logging"
     )
@@ -63,22 +63,36 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Create config from arguments
-    cfg = cc_config(
-        model=args.model,
-        ae_dim=args.ae_dim,
-        model_batch=args.model_batch,
-        lr=args.lr,
-        steps=args.steps,
-        batch_size=args.batch_size,
-        optim=args.optim,
-        log_interval=args.log_interval,
-        save_interval=args.save_interval,
-        buffer_mult=args.buffer_mult,
-        device=args.device,
-        seed=args.seed,
-        verbose=not args.no_verbose,
-    )
+    # Create config with defaults from cc_config, then override with provided args
+    cfg = cc_config()
+
+    # Only override values that were explicitly provided
+    if args.model is not None:
+        cfg.model = args.model
+    if args.ae_dim is not None:
+        cfg.ae_dim = args.ae_dim
+    if args.model_batch is not None:
+        cfg.model_batch = args.model_batch
+    if args.lr is not None:
+        cfg.lr = args.lr
+    if args.steps is not None:
+        cfg.steps = args.steps
+    if args.batch_size is not None:
+        cfg.batch_size = args.batch_size
+    if args.optim is not None:
+        cfg.optim = args.optim
+    if args.log_interval is not None:
+        cfg.log_interval = args.log_interval
+    if args.save_interval is not None:
+        cfg.save_interval = args.save_interval
+    if args.buffer_mult is not None:
+        cfg.buffer_mult = args.buffer_mult
+    if args.device is not None:
+        cfg.device = args.device
+    if args.seed is not None:
+        cfg.seed = args.seed
+    if args.no_verbose:
+        cfg.verbose = False
 
     print("=" * 60)
     print("Training Crosscoder with configuration:")
