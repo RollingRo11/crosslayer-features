@@ -136,7 +136,7 @@ class Crosscoder_Model(nn.Module):
         )
 
         preacts = x_enc + self.b_enc
-        acts = JumpReLUFunction(preacts, self.log_threshold, 2.0)
+        acts = JumpReLUFunction.apply(preacts, self.log_threshold, 2.0)
 
         return acts
 
@@ -301,7 +301,10 @@ class Trainer:
 
         if cfg.optim == "AdamW":
             self.optimizer = torch.optim.AdamW(
-                self.crosscoder.parameters(), lr=cfg.lr, betas=(0.9, 0.999), weight_decay=0.0
+                self.crosscoder.parameters(),
+                lr=cfg.lr,
+                betas=(0.9, 0.999),
+                weight_decay=0.0,
             )
         else:
             raise ValueError(f"Optimizer {cfg.optim} not supported")
@@ -411,13 +414,16 @@ class Trainer:
             if step % self.cfg.log_interval == 0:
                 wandb.log(metrics, step=step)
 
-                print(
-                    f"Step {step}/{self.cfg.steps} | "
-                    f"Loss: {metrics['loss']:.4f} | "
-                    f"Recon: {metrics['recon_loss']:.4f} | "
-                    f"Sparsity Loss: {metrics['sparsity_loss']:.4f} | "
-                    f"L0: {metrics['l0_sparsity']:.1f} | "
-                    f"Dead Features: {metrics['dead_features']:.1f}"),
+                (
+                    print(
+                        f"Step {step}/{self.cfg.steps} | "
+                        f"Loss: {metrics['loss']:.4f} | "
+                        f"Recon: {metrics['recon_loss']:.4f} | "
+                        f"Sparsity Loss: {metrics['sparsity_loss']:.4f} | "
+                        f"L0: {metrics['l0_sparsity']:.1f} | "
+                        f"Dead Features: {metrics['dead_features']:.1f}"
+                    ),
+                )
 
             if step % self.cfg.save_interval == 0 and step > 0:
                 self.save_checkpoint(step)
