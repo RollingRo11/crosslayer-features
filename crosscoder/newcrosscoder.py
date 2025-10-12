@@ -42,7 +42,7 @@ class cc_config:
 
     # anthropic jan 2025 update config:
     l_s: float = 10
-    l_p: float = 3e-6
+    l_p: float = 0.06
     c: float = 4.0
 
 
@@ -50,6 +50,7 @@ class LossOut(NamedTuple):
     loss: torch.Tensor
     sparsity_loss: torch.Tensor
     recon_loss: torch.Tensor
+    preact_loss: torch.Tensor
 
 
 class JumpReLUFunction(torch.autograd.Function):
@@ -153,6 +154,12 @@ class Crosscoder_Model(nn.Module):
         return self.decode(acts)
 
     def get_loss(self, x, debug=False):
+        x_enc = einops.einsum(
+            x, self.W_enc, "... n_layers resid, n_layers resid ae_dim -> ... ae_dim"
+        )
+
+        preacts = x_enc + self.b_enc
+
         acts = self.encode(x)
         reconstructed = self.decode(acts)
 
@@ -178,9 +185,24 @@ class Crosscoder_Model(nn.Module):
             print(f"decoder_norms shape: {decoder_norms.shape}")
             print(f"decoder_norms_summed shape: {decoder_norms_summed.shape}")
 
+        thresholds = self.log_threshold.exp()
+        preact_loss_per_feature = F.relu(
+            thresholds - preacts
+        )  # Shape: [batch_size, ae_dim]
+
+        # This is the corrected line: sum across the feature dimension (-1), THEN average over the batch
+        preact_loss = (
+            (preact_loss_per_feature * decoder_norms_summed).sum(dim=-1).mean()
+        )
+
         loss = squared_diff + reg_term
 
-        return LossOut(loss=loss, sparsity_loss=reg_term, recon_loss=squared_diff)
+        return LossOut(
+            loss=loss,
+            sparsity_loss=reg_term,
+            recon_loss=squared_diff,
+            preact_loss=preact_loss,
+        )
 
 
 class Buffer:
@@ -279,7 +301,7 @@ class Buffer:
 
 class Trainer:
     def __init__(self, cfg: cc_config):
-        self.cfg = cfg
+        self.cfg: cc_config = cfg
         torch.manual_seed(cfg.seed)
 
         self.run_dir = self._get_next_run_dir()
@@ -379,7 +401,11 @@ class Trainer:
 
         debug = self.step == 0
         loss_out = self.crosscoder.get_loss(batch, debug=debug)
-        loss = loss_out.recon_loss + self.get_l1_coeff() * loss_out.sparsity_loss
+        loss = (
+            loss_out.recon_loss
+            + self.get_l1_coeff() * loss_out.sparsity_loss
+            + self.cfg.l_p * loss_out.preact_loss
+        )
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -396,8 +422,9 @@ class Trainer:
             "losses/loss": loss.item(),
             "losses/recon_loss": loss_out.recon_loss.item(),
             "losses/sparsity_loss": loss_out.sparsity_loss.item(),
+            "losses/preact_loss": self.cfg.l_p * loss_out.preact_loss.item(),
             "stats/l0_sparsity": sparsity,
-            "dead_features": dead_features,
+            "stats/dead_features": dead_features,
             "hyperparams/lr": self.scheduler.get_last_lr()[0],
             "hyperparams/l1_coeff": self.get_l1_coeff(),
             "stats/W_dec_norm": self.crosscoder.W_dec.norm(),
@@ -417,11 +444,12 @@ class Trainer:
                 (
                     print(
                         f"Step {step}/{self.cfg.steps} | "
-                        f"Loss: {metrics['loss']:.4f} | "
-                        f"Recon: {metrics['recon_loss']:.4f} | "
-                        f"Sparsity Loss: {metrics['sparsity_loss']:.4f} | "
-                        f"L0: {metrics['l0_sparsity']:.1f} | "
-                        f"Dead Features: {metrics['dead_features']:.1f}"
+                        f"Loss: {metrics['losses/loss']:.4f} | "
+                        f"Recon: {metrics['losses/recon_loss']:.4f} | "
+                        f"Preact Loss: {metrics['losses/preact_loss']:.4f}"
+                        f"Sparsity Loss: {metrics['losses/sparsity_loss']:.4f} | "
+                        f"L0: {metrics['stats/l0_sparsity']:.1f} | "
+                        f"Dead Features: {metrics['stats/dead_features']:.1f}"
                     ),
                 )
 

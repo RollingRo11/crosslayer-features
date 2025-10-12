@@ -1,0 +1,10 @@
+wandb_version: 1
+
+init_norm:
+  value: 0.20909398034658444
+l1_coeff:
+  value: 3.629590017866575
+l_p:
+  value: 1.2937310172262644e-05
+lr:
+  value: 4.767494294738798e-05

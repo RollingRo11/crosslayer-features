@@ -1,0 +1,1 @@
+{"_wandb":{"runtime":1},"losses/loss":11935.1171875,"stats/l0_sparsity":7734.92333984375,"hyperparams/lr":1e-08,"_runtime":1.36252205,"_step":0,"hyperparams/l1_coeff":0,"losses/sparsity_loss":1546.947021484375,"stats/W_dec_norm":5.016555309295654,"_timestamp":1.760300835359275e+09,"losses/recon_loss":11935.1171875,"dead_features":0}

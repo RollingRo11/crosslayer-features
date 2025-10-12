@@ -1,0 +1,34 @@
+wandb_version: 1
+
+ae_dim:
+  value: 40390
+batch_size:
+  value: 2790
+buffer_mult:
+  value: 15
+c:
+  value: 8
+device:
+  value: cuda
+init_norm:
+  value: 0.08510664381386393
+l_p:
+  value: 3.550925400382353e-06
+l_s:
+  value: 9
+log_interval:
+  value: 64
+lr:
+  value: 7.692446168876362e-05
+model:
+  value: gpt2
+model_batch:
+  value: 54
+optim:
+  value: AdamW
+save_interval:
+  value: 11355
+seed:
+  value: 13
+steps:
+  value: 34247
