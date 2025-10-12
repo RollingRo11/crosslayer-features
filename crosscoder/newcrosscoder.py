@@ -22,14 +22,15 @@ class cc_config:
 
     # Train
     optim: str = "AdamW"
-    lr: float = 5e-5
+    lr: float = 2e-5
     steps: int = 50000
     batch_size: int = 2048
     warmup_steps: int = 5000
+    l1_coeff: float = 0.8
 
     # wandb
     log_interval: int = 100
-    save_interval: int = 20000
+    save_interval: int = 5000
 
     # buffer
     buffer_mult: int = 32
@@ -37,7 +38,7 @@ class cc_config:
     # other
     dtype = torch.bfloat16
     device: str = "cuda"
-    seed: int = 11
+    seed: int = 63
     verbose: bool = True
 
     # anthropic jan 2025 update config:
@@ -84,13 +85,15 @@ class Crosscoder_Model(nn.Module):
         scale = n / m
         torch.nn.init.uniform_(self.W_dec, -bound, bound)
 
-        self.W_enc.data = (
-            einops.rearrange(
-                self.W_dec.data.clone(),
-                "ae_dim num_layers resid -> num_layers resid ae_dim",
-            )
-            * scale
-        )
+        # self.W_enc.data = (
+        #     einops.rearrange(
+        #         self.W_dec.data.clone(),
+        #         "ae_dim num_layers resid -> num_layers resid ae_dim",
+        #     )
+        #     * scale
+        # )
+
+        torch.nn.init.kaiming_uniform_(self.W_enc, a=math.sqrt(5))
 
         self.b_enc = nn.Parameter(torch.zeros(self.ae_dim, dtype=self.dtype))
         self.b_dec = nn.Parameter(
@@ -293,7 +296,7 @@ class Trainer:
 
     def _get_next_run_dir(self) -> Path:
         """Find the next available run_n directory"""
-        checkpoints_dir = Path("checkpoints")
+        checkpoints_dir = Path("./checkpoints")
         checkpoints_dir.mkdir(exist_ok=True)
 
         # Find all existing run directories
@@ -328,9 +331,9 @@ class Trainer:
 
     def get_l1_coeff(self):
         if self.step < 0.05 * self.steps:
-            return self.cfg["l1_coeff"] * self.step / (0.05 * self.steps)
+            return self.cfg.l1_coeff * self.step / (0.05 * self.steps)
         else:
-            return self.cfg["l1_coeff"]
+            return self.cfg.l1_coeff
 
     def calculate_sparsity(self, acts: torch.Tensor):
         active = (acts > 0).float().sum(dim=-1).mean()
@@ -367,7 +370,7 @@ class Trainer:
             "l0_sparsity": sparsity,
             "dead_features": dead_features,
             "lr": self.scheduler.get_last_lr()[0],
-            "l1_coeff": self.get_l1_coeff().item(),
+            "l1_coeff": self.get_l1_coeff(),
         }
 
     def train(self):
@@ -398,7 +401,8 @@ class Trainer:
         wandb.finish()
 
     def save_checkpoint(self, step: int):
-        checkpoint_path = self.run_dir / f"crosscoder_step_{step}.pt"
+        print("Saving checkpoint...")
+        checkpoint_path = self.run_dir / f"run_{self.run_id}/crosscoder_step_{step}.pt"
 
         torch.save(
             {

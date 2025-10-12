@@ -1,0 +1,155 @@
+_wandb:
+    value:
+        cli_version: 0.21.0
+        e:
+            moq6zgcnyy184nruzxmwlovui4hp2auz:
+                codePath: crosscoder/train.py
+                codePathLocal: crosscoder/train.py
+                cpu_count: 64
+                cpu_count_logical: 128
+                cudaVersion: "12.8"
+                disk:
+                    /:
+                        total: "62847451136"
+                        used: "16663453696"
+                email: rohan.kathuria@live.com
+                executable: /projects/RohanKathuria/crosslayer-features/.venv/bin/python3
+                git:
+                    commit: 2113f7adbf94ae4ff4843737984d99d1e7e0040c
+                    remote: https://github.com/RollingRo11/crosslayer-features.git
+                gpu: NVIDIA H200
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "150754820096"
+                      name: NVIDIA H200
+                      uuid: GPU-98443ff6-a2ed-3db4-aabb-18eea5cc23e5
+                host: d4054
+                memory:
+                    total: "1622290132992"
+                os: Linux-5.14.0-362.13.1.el9_3.x86_64-x86_64-with-glibc2.34
+                program: /projects/RohanKathuria/crosslayer-features/crosscoder/train.py
+                python: CPython 3.12.11
+                root: /projects/RohanKathuria/crosslayer-features
+                slurm:
+                    cluster_name: explorer
+                    conf: /var/spool/slurmd/conf-cache/slurm.conf
+                    cpu_bind: quiet,mask_cpu:0x00000000000002000000000000000200
+                    cpu_bind_list: 0x00000000000002000000000000000200
+                    cpu_bind_type: 'mask_cpu:'
+                    cpu_bind_verbose: quiet
+                    cpus_on_node: "2"
+                    distribution: cyclic
+                    gpus_on_node: "1"
+                    gtids: "0"
+                    job_account: n.saad
+                    job_cpus_per_node: "2"
+                    job_end_time: "1760253729"
+                    job_gid: "100"
+                    job_group: users
+                    job_id: "2254447"
+                    job_name: bash
+                    job_nodelist: d4054
+                    job_num_nodes: "1"
+                    job_partition: gpu
+                    job_qos: normal
+                    job_start_time: "1760224929"
+                    job_uid: "101226"
+                    job_user: kathuria.r
+                    jobid: "2254447"
+                    launch_node_ipaddr: 10.99.200.107
+                    localid: "0"
+                    mem_per_node: "16384"
+                    nnodes: "1"
+                    nodeid: "0"
+                    nodelist: d4054
+                    nprocs: "1"
+                    ntasks: "1"
+                    prio_process: "0"
+                    procid: "0"
+                    pty_port: "41479"
+                    pty_win_col: "90"
+                    pty_win_row: "52"
+                    script_context: prolog_task
+                    srun_comm_host: 10.99.200.107
+                    srun_comm_port: "38671"
+                    step_gpus: "1"
+                    step_id: "0"
+                    step_launcher_port: "38671"
+                    step_nodelist: d4054
+                    step_num_nodes: "1"
+                    step_num_tasks: "1"
+                    step_tasks_per_node: "1"
+                    stepid: "0"
+                    submit_dir: /projects/RohanKathuria/crosslayer-features
+                    submit_host: explorer-02
+                    task_pid: "2286694"
+                    tasks_per_node: "1"
+                    topology_addr: d4054
+                    topology_addr_pattern: node
+                    umask: "0022"
+                startedAt: "2025-10-11T23:22:40.408633Z"
+                writerId: moq6zgcnyy184nruzxmwlovui4hp2auz
+        m: []
+        python_version: 3.12.11
+        t:
+            "1":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 51
+                - 71
+            "2":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 51
+                - 71
+            "3":
+                - 13
+                - 16
+                - 61
+            "4": 3.12.11
+            "5": 0.21.0
+            "6": 4.54.1
+            "12": 0.21.0
+            "13": linux-x86_64
+ae_dim:
+    value: 32768
+batch_size:
+    value: 2048
+buffer_mult:
+    value: 8
+c:
+    value: 4
+device:
+    value: cuda
+init_norm:
+    value: 0.08
+is_jan:
+    value: false
+l_p:
+    value: 3e-06
+l_s:
+    value: 10
+log_interval:
+    value: 100
+lr:
+    value: 5e-05
+model:
+    value: gpt2
+model_batch:
+    value: 32
+optim:
+    value: AdamW
+save_interval:
+    value: 20000
+seed:
+    value: 11
+steps:
+    value: 50000
+verbose:
+    value: true
