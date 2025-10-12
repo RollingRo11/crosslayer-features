@@ -10,8 +10,8 @@ sys.modules["newcrosscoder"] = newcrosscoder
 
 model = Crosscoder_Model(cc_config)
 state_dict = torch.load(
-    "./checkpoints/run_8/crosscoder_step_20000.pt",
-    map_location="cpu",
+    "./checkpoints/run_17/crosscoder_step_35000.pt",
+    map_location="cuda",
     weights_only=False,
 )
 model.load_state_dict(state_dict["model_state_dict"])
@@ -19,19 +19,21 @@ model.eval()
 
 print(model.W_dec.shape)
 
-print(model.W_dec[10000][0].norm())
+print(model.W_dec[1][0].norm())
 
-norms = []
-for i in range(1):
+
+for i in range(10):
+    print(f"---- NORMS FOR FEATURE {i} ----")
     for j in range(12):
         inorm = torch.linalg.norm(model.W_dec[i][j]).item()
-        norms.append(inorm)
-print(norms)
+        print(inorm)
 
-max_val = max(norms)
-print(max_val)
-for i in range(len(norms)):
-    temp = norms[i]
-    norms[i] = temp / max_val
+    print("\n\n")
 
-print(norms)
+# max_val = max(norms)
+# print(max_val)
+# for i in range(len(norms)):
+#     temp = norms[i]
+#     norms[i] = temp / max_val
+
+# print(norms)

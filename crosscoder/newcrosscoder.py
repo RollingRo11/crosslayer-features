@@ -22,21 +22,21 @@ class cc_config:
 
     # Train
     optim: str = "AdamW"
-    lr: float = 2e-5
+    lr: float = 5e-5
     steps: int = 50000
     batch_size: int = 2048
     warmup_steps: int = 5000
-    l1_coeff: float = 0.8
+    l1_coeff: float = 2
 
     # wandb
     log_interval: int = 100
     save_interval: int = 5000
 
     # buffer
-    buffer_mult: int = 32
+    buffer_mult: int = 8
 
     # other
-    dtype = torch.bfloat16
+    dtype = torch.float32
     device: str = "cuda"
     seed: int = 63
     verbose: bool = True
@@ -79,11 +79,11 @@ class Crosscoder_Model(nn.Module):
             torch.empty(self.ae_dim, self.num_layers, self.resid, dtype=self.dtype)
         )
 
-        n = self.resid
-        m = self.cfg.ae_dim
-        bound = 1.0 / math.sqrt(n)
-        scale = n / m
-        torch.nn.init.uniform_(self.W_dec, -bound, bound)
+        # n = self.resid
+        # m = self.cfg.ae_dim
+        # bound = 1.0 / math.sqrt(n)
+        # scale = n / m
+        # torch.nn.init.uniform_(self.W_dec, -bound, bound)
 
         # self.W_enc.data = (
         #     einops.rearrange(
@@ -92,8 +92,17 @@ class Crosscoder_Model(nn.Module):
         #     )
         #     * scale
         # )
+        #
+        torch.nn.init.normal_(self.W_dec, std=0.1)  # Start from a normal distribution
+        self.W_dec.data = (
+            self.W_dec.data
+            / self.W_dec.data.norm(dim=-1, keepdim=True)
+            * cfg.init_norm  # Use a value like 0.08 from your config
+        )
 
-        torch.nn.init.kaiming_uniform_(self.W_enc, a=math.sqrt(5))
+        effective_fan_in = self.num_layers * self.resid
+        k_bound = math.sqrt(2.0) * math.sqrt(3.0 / effective_fan_in)
+        torch.nn.init.uniform_(self.W_enc, -k_bound, k_bound)
 
         self.b_enc = nn.Parameter(torch.zeros(self.ae_dim, dtype=self.dtype))
         self.b_dec = nn.Parameter(
@@ -222,17 +231,14 @@ class Buffer:
 
         all_acts = all_acts.reshape(-1, self.num_layers, self.resid)
 
-        if self.layer_means is None:
-            self.layer_means = all_acts.mean(dim=0, keepdim=True)
+        if self.layer_stds is None:
+            # Only calculate standard deviation, not the mean
             self.layer_stds = all_acts.std(dim=0, keepdim=True) + 1e-8
-            print(
-                f"  Mean range: [{self.layer_means.min():.4f}, {self.layer_means.max():.4f}]"
-            )
             print(
                 f"  Std range: [{self.layer_stds.min():.4f}, {self.layer_stds.max():.4f}]"
             )
 
-        all_acts = (all_acts - self.layer_means) / self.layer_stds
+        all_acts = all_acts / self.layer_stds
 
         self.buffer[: len(all_acts)] = all_acts[: self.buffer_size]
 
@@ -371,6 +377,7 @@ class Trainer:
             "dead_features": dead_features,
             "lr": self.scheduler.get_last_lr()[0],
             "l1_coeff": self.get_l1_coeff(),
+            "W_dec_norm": self.crosscoder.W_dec.norm(),
         }
 
     def train(self):
