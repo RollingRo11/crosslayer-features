@@ -126,12 +126,17 @@ class Crosscoder_Model(nn.Module):
             torch.zeros((self.num_layers, self.resid), dtype=self.dtype)
         )
 
+        self.log_threshold = nn.Parameter(
+            torch.full((self.ae_dim,), 0.1, dtype=self.dtype)
+        )
+
     def encode(self, x):
         x_enc = einops.einsum(
             x, self.W_enc, "... n_layers resid, n_layers resid ae_dim -> ... ae_dim"
         )
 
-        acts = F.relu(x_enc + self.b_enc)
+        preacts = x_enc + self.b_enc
+        acts = JumpReLUFunction(preacts, self.log_threshold, 2.0)
 
         return acts
 
@@ -296,7 +301,7 @@ class Trainer:
 
         if cfg.optim == "AdamW":
             self.optimizer = torch.optim.AdamW(
-                self.crosscoder.parameters(), lr=cfg.lr, betas=(0.9, 0.999)
+                self.crosscoder.parameters(), lr=cfg.lr, betas=(0.9, 0.999), weight_decay=0.0
             )
         else:
             raise ValueError(f"Optimizer {cfg.optim} not supported")
@@ -385,14 +390,14 @@ class Trainer:
             dead_features = self.calculate_dead_features(acts)
 
         return {
-            "loss": loss.item(),
-            "recon_loss": loss_out.recon_loss.item(),
-            "sparsity_loss": loss_out.sparsity_loss.item(),
-            "l0_sparsity": sparsity,
+            "losses/loss": loss.item(),
+            "losses/recon_loss": loss_out.recon_loss.item(),
+            "losses/sparsity_loss": loss_out.sparsity_loss.item(),
+            "stats/l0_sparsity": sparsity,
             "dead_features": dead_features,
-            "lr": self.scheduler.get_last_lr()[0],
-            "l1_coeff": self.get_l1_coeff(),
-            "W_dec_norm": self.crosscoder.W_dec.norm(),
+            "hyperparams/lr": self.scheduler.get_last_lr()[0],
+            "hyperparams/l1_coeff": self.get_l1_coeff(),
+            "stats/W_dec_norm": self.crosscoder.W_dec.norm(),
         }
 
     def train(self):
@@ -412,7 +417,7 @@ class Trainer:
                     f"Recon: {metrics['recon_loss']:.4f} | "
                     f"Sparsity Loss: {metrics['sparsity_loss']:.4f} | "
                     f"L0: {metrics['l0_sparsity']:.1f} | "
-                    f"Dead Features: {metrics['dead_features']:.1f}",
+                    f"Dead Features: {metrics['dead_features']:.1f}"),
 
             if step % self.cfg.save_interval == 0 and step > 0:
                 self.save_checkpoint(step)

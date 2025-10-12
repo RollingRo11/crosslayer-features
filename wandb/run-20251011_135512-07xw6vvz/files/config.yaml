@@ -1,0 +1,98 @@
+_wandb:
+    value:
+        cli_version: 0.22.2
+        e:
+            zyi9wkk0nuns80k23odxtrg5ycpbc3su:
+                codePath: crosscoder/train.py
+                codePathLocal: crosscoder/train.py
+                cpu_count: 6
+                cpu_count_logical: 12
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "624817741824"
+                        used: "118622695424"
+                email: rohan.kathuria@live.com
+                executable: /home/rohan/developer/crosslayer-features/.venv/bin/python3
+                git:
+                    commit: dd9c0bec792647f998a162def80ca014b10b8945
+                    remote: https://github.com/RollingRo11/crosslayer-features
+                gpu: NVIDIA GeForce RTX 5070
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Blackwell
+                      cudaCores: 6144
+                      memoryTotal: "12820938752"
+                      name: NVIDIA GeForce RTX 5070
+                      uuid: GPU-e43fba92-979b-dc3d-dda0-a1587877eed3
+                host: chonky-linux
+                memory:
+                    total: "32707858432"
+                os: Linux-6.17.1-arch1-1-x86_64-with-glibc2.42
+                program: /home/rohan/developer/crosslayer-features/crosscoder/train.py
+                python: CPython 3.12.11
+                root: /home/rohan/developer/crosslayer-features
+                startedAt: "2025-10-11T17:55:12.317809Z"
+                writerId: zyi9wkk0nuns80k23odxtrg5ycpbc3su
+        m: []
+        python_version: 3.12.11
+        t:
+            "1":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 51
+                - 71
+            "2":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 51
+                - 71
+            "3":
+                - 13
+                - 16
+                - 61
+            "4": 3.12.11
+            "5": 0.22.2
+            "6": 4.57.0
+            "12": 0.22.2
+            "13": linux-x86_64
+ae_dim:
+    value: 32768
+batch_size:
+    value: 2048
+buffer_mult:
+    value: 8
+c:
+    value: 4
+device:
+    value: cuda
+init_norm:
+    value: 0.08
+is_jan:
+    value: false
+l_p:
+    value: 3e-06
+l_s:
+    value: 10
+log_interval:
+    value: 100
+lr:
+    value: 5e-05
+model:
+    value: gpt2
+model_batch:
+    value: 32
+optim:
+    value: AdamW
+save_interval:
+    value: 20000
+seed:
+    value: 11
+steps:
+    value: 50000
+verbose:
+    value: true
