@@ -250,6 +250,10 @@ class Trainer:
         self.cfg = cfg
         torch.manual_seed(cfg.seed)
 
+        # Determine run number
+        self.run_dir = self._get_next_run_dir()
+        print(f"Saving checkpoints to: {self.run_dir}")
+
         print("Initializing crosscoder model...")
         self.crosscoder = Crosscoder_Model(cfg).to(cfg.device)
 
@@ -277,13 +281,48 @@ class Trainer:
             config=cfg.__dict__,
             name=f"{cfg.model}_ae{cfg.ae_dim}",
         )
+        wandb.watch(self.crosscoder, log="all", log_freq=self.cfg.log_interval)
 
         self.step = 0
 
-    def calculate_sparsity(self, acts: torch.Tensor) -> float:
-        """Calculate L0 sparsity (percentage of active features)"""
+    def _get_next_run_dir(self) -> Path:
+        """Find the next available run_n directory"""
+        checkpoints_dir = Path("checkpoints")
+        checkpoints_dir.mkdir(exist_ok=True)
+
+        # Find all existing run directories
+        existing_runs = [
+            d
+            for d in checkpoints_dir.iterdir()
+            if d.is_dir() and d.name.startswith("run_")
+        ]
+
+        if not existing_runs:
+            run_num = 0
+        else:
+            # Extract run numbers and find the maximum
+            run_numbers = []
+            for run_dir in existing_runs:
+                try:
+                    num = int(run_dir.name.split("_")[1])
+                    run_numbers.append(num)
+                except (IndexError, ValueError):
+                    continue
+
+            run_num = max(run_numbers) + 1 if run_numbers else 0
+
+        run_dir = checkpoints_dir / f"run_{run_num}"
+        run_dir.mkdir(exist_ok=True)
+
+        return run_dir
+
+    def calculate_sparsity(self, acts: torch.Tensor):
         active = (acts > 0).float().sum(dim=-1).mean()
         return active.item()
+
+    def calculate_dead_features(self, acts: torch.Tensor):
+        num_dead = (acts.sum(dim=0) == 0).sum().item()
+        return num_dead
 
     def train_step(self):
         self.crosscoder.train()
@@ -300,12 +339,14 @@ class Trainer:
         with torch.no_grad():
             acts = self.crosscoder.encode(batch)
             sparsity = self.calculate_sparsity(acts)
+            dead_features = self.calculate_dead_features(acts)
 
         return {
             "loss": loss_out.loss.item(),
             "recon_loss": loss_out.recon_loss.item(),
             "sparsity_loss": loss_out.sparsity_loss.item(),
             "l0_sparsity": sparsity,
+            "dead_features": dead_features,
         }
 
     def train(self):
@@ -325,7 +366,8 @@ class Trainer:
                         f"Loss: {metrics['loss']:.4f} | "
                         f"Recon: {metrics['recon_loss']:.4f} | "
                         f"Sparsity Loss: {metrics['sparsity_loss']:.4f} | "
-                        f"L0: {metrics['l0_sparsity']:.1f}"
+                        f"L0: {metrics['l0_sparsity']:.1f} | "
+                        f"Dead Features: {metrics['dead_features']:.1f}",
                     )
 
             if step % self.cfg.save_interval == 0 and step > 0:
@@ -335,10 +377,7 @@ class Trainer:
         wandb.finish()
 
     def save_checkpoint(self, step: int):
-        save_dir = Path("checkpoints")
-        save_dir.mkdir(exist_ok=True)
-
-        checkpoint_path = save_dir / f"crosscoder_step_{step}.pt"
+        checkpoint_path = self.run_dir / f"crosscoder_step_{step}.pt"
 
         torch.save(
             {
