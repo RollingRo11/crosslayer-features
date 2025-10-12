@@ -280,6 +280,7 @@ class Trainer:
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer, lr_lambda=lambda step: self._get_lr_multiplier(step)
         )
+        self.steps = cfg.steps
 
         wandb.init(
             project="crosscoder",
@@ -326,8 +327,8 @@ class Trainer:
         return 1.0
 
     def get_l1_coeff(self):
-        if self.step_counter < 0.05 * self.total_steps:
-            return self.cfg["l1_coeff"] * self.step_counter / (0.05 * self.total_steps)
+        if self.step < 0.05 * self.steps:
+            return self.cfg["l1_coeff"] * self.step / (0.05 * self.steps)
         else:
             return self.cfg["l1_coeff"]
 
