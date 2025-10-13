@@ -20,7 +20,7 @@ import io
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sae_vis"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from crosscoder.newcrosscoder import Crosscoder_Model as Crosscoder
+from crosscoder.newcrosscoder import Crosscoder_Model as Crosscoder, cc_config
 
 import nnsight
 from nnsight import LanguageModel
@@ -107,17 +107,24 @@ def load_latest_checkpoint(device=None, checkpoint_path=None):
     checkpoint = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
 
     # Extract config from checkpoint
-    cfg = checkpoint.get("cfg", {})
+    cfg_dict = checkpoint.get("cfg", checkpoint.get("config", {}))
 
-    # Convert dtype string if needed
-    if "dtype" in cfg and isinstance(cfg["dtype"], str):
-        cfg["dtype"] = getattr(torch, cfg["dtype"].split(".")[-1])
+    # Convert dict to cc_config dataclass if needed
+    if isinstance(cfg_dict, dict):
+        # Convert dtype string if needed
+        if "dtype" in cfg_dict and isinstance(cfg_dict["dtype"], str):
+            cfg_dict["dtype"] = getattr(torch, cfg_dict["dtype"].split(".")[-1])
+        # Use detected/specified device
+        cfg_dict["device"] = device
+        # Create cc_config from dict
+        cfg = cc_config(**{k: v for k, v in cfg_dict.items() if hasattr(cc_config, k)})
+    else:
+        # Already a cc_config object
+        cfg = cfg_dict
+        cfg.device = device
 
-    # Use detected/specified device
-    cfg["device"] = device
-
-    # Load the model first - needed for Crosscoder initialization
-    model_name = cfg.get("model_name", "gpt2")
+    # Load the model first - needed for visualization
+    model_name = getattr(cfg, "model_name", getattr(cfg, "model", "gpt2"))
     print(f"Loading model for crosscoder: {model_name}")
     model_name_mapping = {
         "gpt2": "gpt2",
@@ -139,17 +146,23 @@ def load_latest_checkpoint(device=None, checkpoint_path=None):
     else:
         model = nnsight.LanguageModel(actual_model_name, device_map="cpu")
 
-    # Create crosscoder with both config and model
-    crosscoder = Crosscoder(cfg, model)
+    # Create crosscoder with config only (Crosscoder_Model doesn't take model parameter)
+    crosscoder = Crosscoder(cfg)
 
-    # Load weights to the correct device
-    crosscoder.W_enc.data = checkpoint["W_enc"].to(device)
-    crosscoder.W_dec.data = checkpoint["W_dec"].to(device)
-    crosscoder.b_enc.data = checkpoint["b_enc"].to(device)
-    crosscoder.b_dec.data = checkpoint["b_dec"].to(device)
-    if "log_threshold" in checkpoint:
-        crosscoder.log_threshold.data = checkpoint["log_threshold"].to(device)
+    # Load weights from checkpoint
+    if "model_state_dict" in checkpoint:
+        # New format: state dict is nested
+        crosscoder.load_state_dict(checkpoint["model_state_dict"])
+    else:
+        # Old format: weights are at top level
+        crosscoder.W_enc.data = checkpoint["W_enc"].to(device)
+        crosscoder.W_dec.data = checkpoint["W_dec"].to(device)
+        crosscoder.b_enc.data = checkpoint["b_enc"].to(device)
+        crosscoder.b_dec.data = checkpoint["b_dec"].to(device)
+        if "log_threshold" in checkpoint:
+            crosscoder.log_threshold.data = checkpoint["log_threshold"].to(device)
 
+    crosscoder.to(device)
     crosscoder.eval()
     return crosscoder, cfg, model
 
