@@ -30,7 +30,7 @@ class cc_config:
 
     # wandb
     log_interval: int = 100
-    save_interval: int = 5000
+    save_interval: int = 10000
 
     # buffer
     buffer_mult: int = 64
@@ -42,7 +42,7 @@ class cc_config:
 
     # anthropic jan 2025 update config:
     l_s: float = 10
-    l_p: float = 0.06
+    l_p: float = 0.002
     c: float = 4.0
 
 
@@ -446,7 +446,7 @@ class Trainer:
                         f"Step {step}/{self.cfg.steps} | "
                         f"Loss: {metrics['losses/loss']:.4f} | "
                         f"Recon: {metrics['losses/recon_loss']:.4f} | "
-                        f"Preact Loss: {metrics['losses/preact_loss']:.4f}"
+                        f"Preact Loss: {metrics['losses/preact_loss']:.4f} | "
                         f"Sparsity Loss: {metrics['losses/sparsity_loss']:.4f} | "
                         f"L0: {metrics['stats/l0_sparsity']:.1f} | "
                         f"Dead Features: {metrics['stats/dead_features']:.1f}"
