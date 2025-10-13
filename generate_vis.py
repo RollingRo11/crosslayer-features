@@ -14,6 +14,8 @@ from tqdm import tqdm
 import einops
 import argparse
 import random
+import pickle
+import io
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sae_vis"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -90,6 +92,15 @@ def load_latest_checkpoint(device=None, checkpoint_path=None):
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     print(f"Using device: {device}")
+
+    # Handle module name remapping for checkpoints saved with old module structure
+    import sys
+    from crosscoder import newcrosscoder
+
+    # Create module alias to handle old pickle references
+    sys.modules['newcrosscoder'] = newcrosscoder
+    if '__main__' not in sys.modules:
+        sys.modules['__main__'] = sys.modules[__name__]
 
     # Load checkpoint with appropriate device mapping
     map_location = device if device == "cpu" else None
