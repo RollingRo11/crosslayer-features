@@ -957,9 +957,11 @@ def get_feature_data(
         batch_tokens = tokens[i : i + cfg.minibatch_size_tokens]
         batch_end = min(i + cfg.minibatch_size_tokens, n_batches)
 
+        # Initialize layer_acts before trace context
+        layer_acts = []
+
         # Run model with NNsight
         with model.trace(batch_tokens):
-            layer_acts = []
             for layer_idx in range(crosscoder.num_layers):
                 resid = get_layer_output(model, layer_idx, None)
                 layer_acts.append(resid)
@@ -973,8 +975,8 @@ def get_feature_data(
         crosscoder_dtype = next(crosscoder.parameters()).dtype
         stacked_acts = stacked_acts.to(device=crosscoder_device, dtype=crosscoder_dtype)
 
-        # Encode with crosscoder
-        preacts, cc_acts = crosscoder.encode(stacked_acts)
+        # Encode with crosscoder (Crosscoder_Model.encode only returns acts, not preacts)
+        cc_acts = crosscoder.encode(stacked_acts)
 
         # Store only the features we need directly
         for feat_idx in feature_indices:
