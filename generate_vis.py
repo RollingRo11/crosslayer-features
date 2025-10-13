@@ -18,7 +18,7 @@ import random
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sae_vis"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from crosscoder.crosscoder import Crosscoder
+from crosscoder.newcrosscoder import Crosscoder
 
 import nnsight
 from nnsight import LanguageModel
@@ -30,32 +30,60 @@ from sae_vis.data_fetching_fns import get_feature_data
 from sae_vis.data_storing_fns import CrosscoderVisData
 
 
-def load_latest_checkpoint(device=None):
-    """Load the most recent crosscoder checkpoint from latest.pt in the most recent version folder."""
-    saves_dir = Path("crosscoder/saves")
+def load_latest_checkpoint(device=None, checkpoint_path=None):
+    """Load the most recent crosscoder checkpoint.
 
-    # Find all version folders
-    version_folders = list(saves_dir.glob("version_*"))
-    if not version_folders:
-        raise ValueError(f"No version folders found in {saves_dir}")
+    Args:
+        device: Device to load to ('cuda' or 'cpu')
+        checkpoint_path: Optional path to specific checkpoint. If not provided, searches for latest.
+    """
+    if checkpoint_path is None:
+        # Try new checkpoint structure first (./checkpoints/run_N/)
+        checkpoints_dir = Path("./checkpoints")
+        if checkpoints_dir.exists():
+            run_folders = list(checkpoints_dir.glob("run_*"))
+            if run_folders:
+                # Sort by run number to get most recent
+                def sort_key(path):
+                    return int(path.name.split("_")[1])
+                run_folders.sort(key=sort_key)
+                latest_run = run_folders[-1]
 
-    # Sort by version number to get the most recent
-    def sort_key(path):
-        version = int(path.name.split("_")[1])
-        return version
+                # Look for latest.pt or highest numbered checkpoint
+                latest_pt = latest_run / "latest.pt"
+                if latest_pt.exists():
+                    checkpoint_path = latest_pt.resolve()
+                else:
+                    # Find highest numbered checkpoint
+                    checkpoints = list(latest_run.glob("checkpoint_*.pt"))
+                    if checkpoints:
+                        checkpoint_path = max(checkpoints, key=lambda p: int(p.stem.split("_")[1]))
 
-    version_folders.sort(key=sort_key)
-    latest_version_folder = version_folders[-1]
+        # Fallback to old structure (crosscoder/saves/version_N/)
+        if checkpoint_path is None:
+            saves_dir = Path("crosscoder/saves")
+            version_folders = list(saves_dir.glob("version_*"))
+            if not version_folders:
+                raise ValueError(f"No checkpoints found in {checkpoints_dir} or {saves_dir}")
 
-    # Look for latest.pt in the most recent version folder
-    latest_pt = latest_version_folder / "latest.pt"
-    if not latest_pt.exists():
-        raise ValueError(f"latest.pt not found in {latest_version_folder}")
+            def sort_key(path):
+                return int(path.name.split("_")[1])
+            version_folders.sort(key=sort_key)
+            latest_version_folder = version_folders[-1]
 
-    # Resolve symlink to get actual checkpoint path
-    latest = latest_pt.resolve()
+            latest_pt = latest_version_folder / "latest.pt"
+            if latest_pt.exists():
+                checkpoint_path = latest_pt.resolve()
+            else:
+                # Try numbered checkpoints
+                checkpoints = list(latest_version_folder.glob("[0-9]*.pt"))
+                if checkpoints:
+                    checkpoint_path = max(checkpoints, key=lambda p: int(p.stem))
+                else:
+                    raise ValueError(f"No checkpoints found in {latest_version_folder}")
 
-    print(f"Loading checkpoint: {latest} (from {latest_version_folder.name})")
+    checkpoint_path = Path(checkpoint_path)
+    print(f"Loading checkpoint: {checkpoint_path}")
 
     # Auto-detect device if not specified
     if device is None:
@@ -65,37 +93,14 @@ def load_latest_checkpoint(device=None):
 
     # Load checkpoint with appropriate device mapping
     map_location = device if device == "cpu" else None
-    checkpoint = torch.load(latest, map_location=map_location, weights_only=False)
+    checkpoint = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
 
-    # Load config - try checkpoint-specific config first, then fall back to 0_cfg.json
-    config_file = latest.parent / f"{latest.stem}_cfg.json"
-    if not config_file.exists():
-        # Fall back to 0_cfg.json which is typically the base config
-        config_file = latest.parent / "0_cfg.json"
+    # Extract config from checkpoint
+    cfg = checkpoint.get("cfg", {})
 
-    if config_file.exists():
-        print(f"Loading config from: {config_file}")
-        with open(config_file) as f:
-            cfg = json.load(f)
-        # Convert dtype string
-        if "dtype" in cfg and isinstance(cfg["dtype"], str):
-            cfg["dtype"] = getattr(torch, cfg["dtype"].split(".")[-1])
-    else:
-        # Default config
-        print("No config file found, using defaults")
-        cfg = {
-            "model_name": "gpt2",
-            "ae_dim": 4096,
-            "device": device,
-            "dtype": torch.float32,
-            "drop_bos": True,
-        }
-
-    # Add missing required fields with defaults
-    if "dec_init_norm" not in cfg:
-        cfg["dec_init_norm"] = 0.05
-    if "seed" not in cfg:
-        cfg["seed"] = 42
+    # Convert dtype string if needed
+    if "dtype" in cfg and isinstance(cfg["dtype"], str):
+        cfg["dtype"] = getattr(torch, cfg["dtype"].split(".")[-1])
 
     # Use detected/specified device
     cfg["device"] = device
@@ -131,6 +136,8 @@ def load_latest_checkpoint(device=None):
     crosscoder.W_dec.data = checkpoint["W_dec"].to(device)
     crosscoder.b_enc.data = checkpoint["b_enc"].to(device)
     crosscoder.b_dec.data = checkpoint["b_dec"].to(device)
+    if "log_threshold" in checkpoint:
+        crosscoder.log_threshold.data = checkpoint["log_threshold"].to(device)
 
     crosscoder.eval()
     return crosscoder, cfg, model
@@ -145,8 +152,8 @@ def parse_args():
     parser.add_argument(
         "--num_features",
         type=int,
-        default=10,
-        help="Number of features to visualize (default: 10)",
+        default=5,
+        help="Number of features to visualize (default: 5)",
     )
 
     parser.add_argument(
@@ -158,36 +165,36 @@ def parse_args():
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=16,
-        help="Batch size for token processing (default: 16)",
+        default=4,
+        help="Batch size for token processing (default: 4)",
     )
 
     parser.add_argument(
         "--num_sequences",
         type=int,
-        default=5000,
-        help="Number of sequences to process (default: 5000)",
+        default=500,
+        help="Number of sequences to process (default: 500)",
     )
 
     parser.add_argument(
         "--seq_len",
         type=int,
-        default=1024,
-        help="Length of each sequence (default: 1024, max: 1024 for GPT-2, 2048 for Pythia)",
+        default=256,
+        help="Length of each sequence (default: 256, max: 1024 for GPT-2, 2048 for Pythia)",
     )
 
     parser.add_argument(
         "--top_acts_per_feature",
         type=int,
-        default=100,
-        help="Number of top activating sequences to show per feature (default: 100)",
+        default=10,
+        help="Number of top activating sequences to show per feature (default: 10)",
     )
 
     parser.add_argument(
         "--quantile_examples",
         type=int,
-        default=20,
-        help="Number of examples per quantile group (default: 20)",
+        default=5,
+        help="Number of examples per quantile group (default: 5)",
     )
 
     parser.add_argument(
@@ -208,6 +215,13 @@ def parse_args():
         type=str,
         default="cached_tokens.pt",
         help="Cache file for token data (default: cached_tokens.pt)",
+    )
+
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Path to specific checkpoint file (optional, will auto-detect if not provided)",
     )
 
     return parser.parse_args()
@@ -411,7 +425,7 @@ def main():
     print(f"Auto-detected device: {device}")
 
     # Load crosscoder with consistent device
-    crosscoder, crosscoder_cfg, model = load_latest_checkpoint(device=device)
+    crosscoder, crosscoder_cfg, model = load_latest_checkpoint(device=device, checkpoint_path=args.checkpoint)
     print(f"Loaded crosscoder with {crosscoder.ae_dim} features")
 
     # Verify model dimensions match crosscoder expectations
@@ -452,10 +466,10 @@ def main():
         selected_features = list(range(min(args.num_features, crosscoder.ae_dim)))
         print(f"Sequential features: {selected_features}")
 
-    # Create config with enhanced parameters for large-scale analysis
+    # Create config with parameters optimized for laptop use
     config = CrosscoderVisConfig(
         features=selected_features,
-        minibatch_size_features=32,  # Larger feature batch for efficiency
+        minibatch_size_features=8,  # Smaller feature batch for laptop
         minibatch_size_tokens=args.batch_size,
         verbose=True,  # Enable progress reporting
     )
@@ -466,14 +480,14 @@ def main():
         CrossLayerTrajectoryConfig,
     )
 
-    # Much more data for better interpretation
+    # Laptop-optimized configuration
     config.feature_centric_layout.seq_cfg = SeqMultiGroupConfig(
-        top_acts_group_size=args.top_acts_per_feature,  # Many more top examples
-        n_quantiles=10,  # Keep 10 quantile groups for good distribution view
-        quantile_group_size=args.quantile_examples,  # More examples per quantile
-        buffer=(32, 32),  # Larger context window for 1024 token sequences
+        top_acts_group_size=args.top_acts_per_feature,
+        n_quantiles=5,  # Fewer quantile groups for laptop
+        quantile_group_size=args.quantile_examples,
+        buffer=(16, 16),  # Smaller context window for laptop
         compute_buffer=True,  # Enable proper buffer computation
-        top_logits_hoverdata=10,  # Show top 10 logits in hover
+        top_logits_hoverdata=5,  # Show top 5 logits in hover
     )
 
     # Add cross-layer trajectory visualization
