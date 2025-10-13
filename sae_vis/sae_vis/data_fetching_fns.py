@@ -957,17 +957,19 @@ def get_feature_data(
         batch_tokens = tokens[i : i + cfg.minibatch_size_tokens]
         batch_end = min(i + cfg.minibatch_size_tokens, n_batches)
 
-        # Initialize layer_acts before trace context
-        layer_acts = []
-
-        # Run model with NNsight
-        with model.trace(batch_tokens):
+        # Run model with NNsight and collect layer outputs
+        with model.trace(batch_tokens) as tracer:
+            layer_acts = []
             for layer_idx in range(crosscoder.num_layers):
-                resid = get_layer_output(model, layer_idx, None)
+                resid = get_layer_output(model, layer_idx, tracer)
                 layer_acts.append(resid)
 
-        # Stack layer activations
-        stacked_acts = torch.stack([act.value for act in layer_acts], dim=1)
+        # Stack layer activations - proxies are now resolved
+        # Check if layer_acts contains proxy objects or tensors
+        if hasattr(layer_acts[0], 'value'):
+            stacked_acts = torch.stack([act.value for act in layer_acts], dim=1)
+        else:
+            stacked_acts = torch.stack(layer_acts, dim=1)
         stacked_acts = stacked_acts.permute(0, 2, 1, 3)
 
         # Move stacked_acts to same device and dtype as crosscoder
