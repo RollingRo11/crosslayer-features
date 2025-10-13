@@ -18,7 +18,7 @@ import random
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sae_vis"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from crosscoder.newcrosscoder import Crosscoder
+from crosscoder.newcrosscoder import Crosscoder_Model as Crosscoder
 
 import nnsight
 from nnsight import LanguageModel
