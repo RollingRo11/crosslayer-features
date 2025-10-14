@@ -20,7 +20,7 @@ import io
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sae_vis"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from crosscoder.newcrosscoder import Crosscoder_Model as Crosscoder, cc_config
+from crosscoder.crosscoder import Crosscoder_Model as Crosscoder, cc_config
 
 import nnsight
 from nnsight import LanguageModel
@@ -95,10 +95,10 @@ def load_latest_checkpoint(device=None, checkpoint_path=None):
 
     # Handle module name remapping for checkpoints saved with old module structure
     import sys
-    from crosscoder import newcrosscoder
+    from crosscoder import crosscoder
 
     # Create module alias to handle old pickle references
-    sys.modules['newcrosscoder'] = newcrosscoder
+    sys.modules['newcrosscoder'] = crosscoder
     if '__main__' not in sys.modules:
         sys.modules['__main__'] = sys.modules[__name__]
 

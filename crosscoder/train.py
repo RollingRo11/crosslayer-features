@@ -1,7 +1,7 @@
 import argparse
 import torch
 from pathlib import Path
-from newcrosscoder import cc_config, Trainer
+from crosscoder import cc_config, Trainer
 
 
 def parse_args():

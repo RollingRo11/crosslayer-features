@@ -1,312 +1,59 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from nnsight import LanguageModel
-import wandb
-import einops
-from typing import NamedTuple
-from pathlib import Path
-import tqdm
-import json
-import numpy as np
+from torch.nn import functional as F
+from dataclasses import dataclass
 import math
+from typing import NamedTuple
+from nnsight import LanguageModel
+import einops
 from datasets import load_dataset
+from pathlib import Path
+import wandb
 from torch.nn.utils import clip_grad_norm_
-import sys
-import torch.autograd as autograd
-
-sys.path.append(str(Path(__file__).parent.parent / "sae_vis" / "sae_vis"))
-from model_utils import get_layer_output
-
-PROJECT_ROOT = Path(__file__).parent.parent
-DATASET_CACHE_DIR = PROJECT_ROOT / "data" / "hf_datasets_cache"
-DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-class LossOutput(NamedTuple):
-    reconstruction_loss: torch.Tensor  # L2 Loss
-    sparsity_loss: torch.Tensor  # L_S (tanh loss)
-    pre_act_loss: torch.Tensor  # L_P (dead feature loss)
+@dataclass
+class cc_config:
+    # crosscoder config:
+    model: str = "gpt2"
+    ae_dim: int = 2**15
+    model_batch: int = 128
+    init_norm: float = 0.008
+
+    # Train
+    optim: str = "AdamW"
+    lr: float = 5e-5
+    steps: int = 50000
+    batch_size: int = 2048
+    warmup_steps: int = 5000
+    l1_coeff: float = 0.8
+
+    # wandb
+    log_interval: int = 100
+    save_interval: int = 10000
+
+    # buffer
+    buffer_mult: int = 64
+
+    # other
+    dtype = torch.float32
+    device: str = "cuda"
+    seed: int = 721
+
+    # anthropic jan 2025 update config:
+    l_s: float = 10
+    l_p: float = 0.002
+    c: float = 4.0
 
 
-def print_gpu_memory(tag=""):
-    if torch.cuda.is_available():
-        allocated = torch.cuda.memory_allocated(0) / (1024**3)
-        reserved = torch.cuda.memory_reserved(0) / (1024**3)
-        free, total = torch.cuda.mem_get_info(0)
-        used = (total - free) / (1024**3)
-        total_gb = total / (1024**3)
-
-        print(f"--- GPU Memory {tag} ---")
-        print(f"  - Allocated by Tensors: {allocated:.2f} GB")
-        print(f"  - Reserved by PyTorch:  {reserved:.2f} GB")
-        print(f"  - Total GPU Usage:      {used:.2f} GB / {total_gb:.2f} GB")
-        print("--------------------------")
+class LossOut(NamedTuple):
+    loss: torch.Tensor
+    sparsity_loss: torch.Tensor
+    recon_loss: torch.Tensor
+    preact_loss: torch.Tensor
 
 
-cc_config = {
-    "seed": 11,
-    "batch_size": 2048,
-    "buffer_mult": 24,
-    "lr": 5e-5,
-    "num_tokens": int(4e8),
-    "beta1": 0.9,
-    "beta2": 0.999,
-    "context": 4096,
-    "device": "cuda",
-    "model_batch_size": 8,
-    "log_interval": 100,
-    "save_interval": 20000,
-    "model_name": "gemma2-2b",  # gpt2, pythia, gemma3-4b, qwen3-4b, gemma2-2b
-    "dtype": torch.bfloat16,
-    "ae_dim": 2**15,
-    "drop_bos": True,
-    "total_steps": 100000,
-    "normalization": "layer_wise",
-    "optimizer": "adamw",
-    "dec_init_norm": 0.003,
-    "l_s_coefficient": 10,
-    "l_p_coefficient": 3e-6,
-    "c": 4.0,
-    "initial_approx_firing_pct": 0.25,  # Target ~25% feature activation initially
-    "n_tokens_for_bias_init": 5000,  # Number of tokens to use for bias initialization
-}
-
-CROSSCODER_DIR = Path(__file__).parent
-SAVE_DIR = CROSSCODER_DIR / "saves"
-WANDB_DIR = CROSSCODER_DIR / "wandb"
-
-
-# enc of n_layers, d_model, d_sae
-# dec of d_sae, n_layers, d_model
-# loss func (we gonna use L1 of norms)
-# d_sae could be anyting
-class Crosscoder(nn.Module):
-    def __init__(self, cfg, model):
-        super().__init__()
-        self.cfg = cfg
-        self.model = model
-        self.modelcfg = self.model.config.to_dict()  # type: ignore
-        self.context = self.cfg["context"]
-
-        if "num_hidden_layers" in self.modelcfg:
-            self.num_layers = self.modelcfg["num_hidden_layers"]
-        elif "n_layer" in self.modelcfg:
-            self.num_layers = self.modelcfg["n_layer"]
-        elif "num_layers" in self.modelcfg:
-            self.num_layers = self.modelcfg["num_layers"]
-        else:
-            raise ValueError(
-                f"Could not find number of layers in model config. Available keys: {list(self.modelcfg.keys())}"
-            )
-
-        if "hidden_size" in self.modelcfg:
-            self.resid_dim = self.modelcfg["hidden_size"]
-        elif "n_embd" in self.modelcfg:
-            self.resid_dim = self.modelcfg["n_embd"]
-        elif "d_model" in self.modelcfg:
-            self.resid_dim = self.modelcfg["d_model"]
-        else:
-            raise ValueError(
-                f"Could not find hidden dimension in model config. Available keys: {list(self.modelcfg.keys())}"
-            )
-
-        self.init_norm = cfg["dec_init_norm"]
-        self.seed = self.cfg["seed"]
-        torch.manual_seed(self.seed)
-        self.ae_dim = cfg["ae_dim"]
-        self.dtype = cfg["dtype"]
-        self.save_dir = None
-        self.log_threshold = nn.Parameter(
-            torch.full((self.ae_dim,), 0.1, dtype=self.dtype)
-        )
-
-        self.W_enc = nn.Parameter(
-            torch.empty(self.num_layers, self.resid_dim, self.ae_dim, dtype=self.dtype)
-        )
-
-        self.W_dec = nn.Parameter(
-            torch.empty(self.ae_dim, self.num_layers, self.resid_dim, dtype=self.dtype)
-        )
-        bound = 1.0 / math.sqrt(self.resid_dim)
-        torch.nn.init.uniform_(self.W_dec, -bound, bound)
-
-        scaling_factor = self.resid_dim / self.ae_dim
-        self.W_enc.data = (
-            einops.rearrange(
-                self.W_dec.data.clone(),
-                "ae_dim n_layers d_model -> n_layers d_model ae_dim",
-            )
-            * scaling_factor
-        )
-
-        self.b_enc = nn.Parameter(torch.zeros(self.ae_dim, dtype=self.dtype))
-        self.b_dec = nn.Parameter(
-            torch.zeros((self.num_layers, self.resid_dim), dtype=self.dtype)
-        )
-
-        self.to(cfg["device"])
-
-    def encode(self, x):
-        if self.W_enc is None:
-            w_enc_t = einops.rearrange(
-                self.W_dec, "ae_dim n_layers d_model -> n_layers d_model ae_dim"
-            )
-        else:
-            w_enc_t = self.W_enc
-
-        x_enc = einops.einsum(
-            x,
-            w_enc_t,
-            "... n_layers d_model, n_layers d_model ae_dim -> ... ae_dim",
-        )
-
-        preacts = x_enc + self.b_enc
-        acts = JumpReLUFunction.apply(preacts, self.log_threshold, 2.0)
-
-        return preacts, acts
-
-    def decode(self, acts):
-        acts_dec = einops.einsum(
-            acts,
-            self.W_dec,
-            "... ae_dim, ae_dim n_layers d_model -> ... n_layers d_model",
-        )
-
-        return acts_dec + self.b_dec
-
-    def forward(self, x):
-        acts = self.encode(x)
-        return self.decode(acts)
-
-    @torch.no_grad()
-    def initialize_b_enc(self, buffer, initial_approx_firing_pct=0.25, n_tokens=5000):
-        print(f"\nInitializing encoder bias with {n_tokens} tokens...")
-        print(f"Target firing percentage: {initial_approx_firing_pct * 100:.1f}%")
-
-        n_batches = (n_tokens + self.cfg["batch_size"] - 1) // self.cfg["batch_size"]
-        pre_bias_list = []
-
-        for i in tqdm.tqdm(range(n_batches), desc="Collecting pre-bias activations"):
-            acts = buffer.next()
-            acts = acts.to(dtype=self.dtype, device=self.cfg["device"])
-
-            pre_bias = einops.einsum(
-                acts,
-                self.W_enc,
-                "... n_layers d_model, n_layers d_model ae_dim -> ... ae_dim",
-            )
-
-            pre_bias_list.append(pre_bias)
-
-            if len(pre_bias_list) * self.cfg["batch_size"] >= n_tokens:
-                break
-
-        pre_bias_all = torch.cat(pre_bias_list, dim=0)[:n_tokens]
-        print(f"Collected pre-bias shape: {pre_bias_all.shape}")
-
-        threshold = torch.exp(self.log_threshold)
-
-        print("Computing quantiles for each feature...")
-        chunk_size = 4096
-        quantiles = torch.empty(
-            self.ae_dim, dtype=self.dtype, device=self.cfg["device"]
-        )
-
-        for i in tqdm.tqdm(
-            range(0, self.ae_dim, chunk_size), desc="Computing quantiles"
-        ):
-            end_idx = min(i + chunk_size, self.ae_dim)
-            chunk = pre_bias_all[:, i:end_idx]
-
-            chunk_float = chunk.float()
-            quantiles_chunk = torch.quantile(
-                chunk_float, 1.0 - initial_approx_firing_pct, dim=0
-            )
-            quantiles[i:end_idx] = quantiles_chunk.to(self.dtype)
-
-        self.b_enc.data = threshold - quantiles
-
-        print(f"Encoder bias initialized!")
-        print(f"  Mean bias: {self.b_enc.mean().item():.4f}")
-        print(f"  Std bias: {self.b_enc.std().item():.4f}")
-        print(f"  Sample biases: {self.b_enc[:10].float().cpu().numpy()}")
-
-        buffer.pointer = 0
-
-    def return_loss(self, x):
-        x = x.to(self.dtype).to(self.cfg["device"])
-
-        preacts, acts = self.encode(x)
-
-        reconstructed_x = self.decode(acts)
-
-        squared_diff = (reconstructed_x.float() - x.float()).pow(2)
-        reconstruction_loss = einops.reduce(
-            squared_diff, "batch n_layers d_model -> batch", "sum"
-        ).mean()
-
-        decoder_norms_per_layer = self.W_dec.norm(dim=-1)  # Shape: (ae_dim, num_layers)
-        decoder_norms = einops.reduce(
-            decoder_norms_per_layer, "ae_dim n_layers -> ae_dim", "sum"
-        )
-
-        c = self.cfg["c"]
-        sparsity_term = torch.tanh(c * torch.abs(acts) * decoder_norms)
-        sparsity_loss = sparsity_term.sum(dim=-1).mean()
-
-        relu_term = F.relu(torch.exp(self.log_threshold) - preacts)
-        pre_act_loss_term = relu_term * decoder_norms
-        pre_act_loss = pre_act_loss_term.sum(dim=-1).mean()
-
-        return LossOutput(
-            reconstruction_loss=reconstruction_loss,
-            sparsity_loss=sparsity_loss,
-            pre_act_loss=pre_act_loss,
-        )
-
-    def save(self):
-        if self.save_dir is None:
-            SAVE_DIR.mkdir(parents=True, exist_ok=True)
-            version_list = [
-                int(file.name.split("_")[1])
-                for file in list(SAVE_DIR.iterdir())
-                if "version" in str(file)
-            ]
-            if len(version_list):
-                version = 1 + max(version_list)
-            else:
-                version = 0
-            self.save_dir = SAVE_DIR / f"version_{version}"
-            self.save_dir.mkdir(parents=True, exist_ok=True)
-
-        self.save_version = getattr(self, "save_version", 0)
-
-        weight_path = self.save_dir / f"{self.save_version}.pt"
-        cfg_path = self.save_dir / f"{self.save_version}_cfg.json"
-
-        torch.save(
-            {
-                "W_enc": self.W_enc.data,
-                "W_dec": self.W_dec.data,
-                "b_enc": self.b_enc.data,
-                "b_dec": self.b_dec.data,
-                "log_threshold": self.log_threshold.data,
-                "cfg": self.cfg,
-            },
-            weight_path,
-        )
-
-        cfg_to_save = self.cfg.copy()
-        cfg_to_save["dtype"] = str(cfg_to_save["dtype"])
-
-        with open(cfg_path, "w") as f:
-            json.dump(cfg_to_save, f, indent=2)
-
-        self.save_version += 1
-
-
-class JumpReLUFunction(autograd.Function):
+class JumpReLUFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, log_threshold, bandwidth):
         threshold = log_threshold.exp()
@@ -318,7 +65,7 @@ class JumpReLUFunction(autograd.Function):
         x, threshold, bandwidth_tensor = ctx.saved_tensors
         bandwidth = bandwidth_tensor.item()
         x_grad = (x > threshold).float() * grad_output
-        # Gradient flows back to log_threshold (via chain rule: d/d(log_t) = d/dt * dt/d(log_t) = d/dt * t)
+
         threshold_grad = (
             -(threshold / bandwidth)
             * RectangleFunction.apply((x - threshold) / bandwidth)
@@ -327,7 +74,7 @@ class JumpReLUFunction(autograd.Function):
         return x_grad, threshold_grad, None
 
 
-class RectangleFunction(autograd.Function):
+class RectangleFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x):
         ctx.save_for_backward(x)
@@ -341,549 +88,389 @@ class RectangleFunction(autograd.Function):
         return grad_input
 
 
+class Crosscoder_Model(nn.Module):
+    def __init__(self, cfg: cc_config):
+        super().__init__()
+        self.cfg: cc_config = cfg
+        self.model_name: str = cfg.model
+        self.ae_dim: int = cfg.ae_dim
+        self.dtype = cfg.dtype
+
+        if cfg.model == "gpt2":
+            self.resid: int = 768
+            self.num_layers: int = 12
+        elif cfg.model == "gemma2-2b":
+            self.resid = 2048
+            self.num_layers = 32
+        else:
+            raise ValueError(f"Model {cfg.model} not supported")
+
+        self.W_enc = nn.Parameter(
+            torch.empty(self.num_layers, self.resid, self.ae_dim, dtype=self.dtype)
+        )
+
+        self.W_dec = nn.Parameter(
+            torch.empty(self.ae_dim, self.num_layers, self.resid, dtype=self.dtype)
+        )
+
+        torch.nn.init.normal_(self.W_dec, std=0.1)
+        self.W_dec.data = (
+            self.W_dec.data / self.W_dec.data.norm(dim=-1, keepdim=True) * cfg.init_norm
+        )
+
+        effective_fan_in = self.num_layers * self.resid
+        k_bound = math.sqrt(2.0) * math.sqrt(3.0 / effective_fan_in)
+        torch.nn.init.uniform_(self.W_enc, -k_bound, k_bound)
+
+        self.b_enc = nn.Parameter(torch.zeros(self.ae_dim, dtype=self.dtype))
+        self.b_dec = nn.Parameter(
+            torch.zeros((self.num_layers, self.resid), dtype=self.dtype)
+        )
+
+        self.log_threshold = nn.Parameter(
+            torch.full((self.ae_dim,), 0.1, dtype=self.dtype)
+        )
+
+    def encode(self, x):
+        x_enc = einops.einsum(
+            x, self.W_enc, "... n_layers resid, n_layers resid ae_dim -> ... ae_dim"
+        )
+
+        preacts = x_enc + self.b_enc
+        acts = JumpReLUFunction.apply(preacts, self.log_threshold, 2.0)
+
+        return acts
+
+    def decode(self, acts):
+        acts_dec = einops.einsum(
+            acts,
+            self.W_dec,
+            "... ae_dim, ae_dim n_layers resid -> ... n_layers resid",
+        )
+        return acts_dec + self.b_dec
+
+    def forward(self, x):
+        acts = self.encode(x)
+        return self.decode(acts)
+
+    def get_loss(self, x, debug=False):
+        x_enc = einops.einsum(
+            x, self.W_enc, "... n_layers resid, n_layers resid ae_dim -> ... ae_dim"
+        )
+
+        preacts = x_enc + self.b_enc
+
+        acts = self.encode(x)
+        reconstructed = self.decode(acts)
+
+        if debug:
+            print(f"Input x shape: {x.shape}")
+            print(f"Acts shape: {acts.shape}")
+            print(f"Reconstructed shape: {reconstructed.shape}")
+
+        x_float = x.float()
+        reconstructed_float = reconstructed.float()
+        acts_float = acts.float()
+
+        squared_diff = (x_float - reconstructed_float).pow(2).sum(dim=(-2, -1)).mean()
+
+        decoder_norms = self.W_dec.norm(dim=-1)
+        decoder_norms_summed = decoder_norms.sum(dim=1)
+
+        reg_term = (acts_float * decoder_norms_summed).sum(dim=-1).mean()
+
+        if debug:
+            print(f"Squared diff (recon loss): {squared_diff.item():.4f}")
+            print(f"Reg term (sparsity loss): {reg_term.item():.4f}")
+            print(f"decoder_norms shape: {decoder_norms.shape}")
+            print(f"decoder_norms_summed shape: {decoder_norms_summed.shape}")
+
+        thresholds = self.log_threshold.exp()
+        preact_loss_per_feature = F.relu(
+            thresholds - preacts
+        )  # Shape: [batch_size, ae_dim]
+
+        # This is the corrected line: sum across the feature dimension (-1), THEN average over the batch
+        preact_loss = (
+            (preact_loss_per_feature * decoder_norms_summed).sum(dim=-1).mean()
+        )
+
+        loss = squared_diff + reg_term
+
+        return LossOut(
+            loss=loss,
+            sparsity_loss=reg_term,
+            recon_loss=squared_diff,
+            preact_loss=preact_loss,
+        )
+
+
 class Buffer:
-    def __init__(self, cfg, model):
-        self.cfg = cfg
+    def __init__(self, cfg: cc_config, model: LanguageModel):
         self.model = model
-        self.context = self.cfg["context"]
-        self.modelcfg = self.model.config.to_dict()  # type: ignore
+        self.cfg = cfg
+        self.modelcfg = self.model.config.to_dict()
+        self.num_layers = self.modelcfg["n_layer"]
+        self.resid = self.modelcfg["n_embd"]
+        self.context = 1024
 
-        if "num_hidden_layers" in self.modelcfg:
-            self.num_layers = self.modelcfg["num_hidden_layers"]
-        elif "n_layer" in self.modelcfg:
-            self.num_layers = self.modelcfg["n_layer"]
-        elif "num_layers" in self.modelcfg:
-            self.num_layers = self.modelcfg["num_layers"]
-        else:
-            raise ValueError(
-                f"Could not find number of layers in model config. Available keys: {list(self.modelcfg.keys())}"
-            )
-
-        if "hidden_size" in self.modelcfg:
-            self.resid_dim = self.modelcfg["hidden_size"]
-        elif "n_embd" in self.modelcfg:
-            self.resid_dim = self.modelcfg["n_embd"]
-        elif "d_model" in self.modelcfg:
-            self.resid_dim = self.modelcfg["d_model"]
-        else:
-            raise ValueError(
-                f"Could not find hidden dimension in model config. Available keys: {list(self.modelcfg.keys())}"
-            )
-
-        self.buffer_size = self.cfg["batch_size"] * cfg["buffer_mult"]
-        self.buffer_batches = self.buffer_size // (self.context - 1)
-        self.buffer_size = self.buffer_batches * (self.context - 1)
-
+        self.buffer_size = self.cfg.batch_size * self.cfg.buffer_mult
         self.buffer = torch.zeros(
-            (self.buffer_size, self.num_layers, self.resid_dim),
-            dtype=torch.bfloat16,
-            requires_grad=False,
-        ).to(cfg["device"])
+            (self.buffer_size, self.num_layers, self.resid),
+            dtype=self.cfg.dtype,
+            device=self.cfg.device,
+        )
         self.pointer = 0
-        self.first = True
-        self.normalize = True
 
         self.dataset = load_dataset(
-            "monology/pile-uncopyrighted",
-            split="train",
-            streaming=True,
-            cache_dir=str(DATASET_CACHE_DIR),
+            "monology/pile-uncopyrighted", split="train", streaming=True
         )
         self.dataset_iter = iter(self.dataset)
 
-        estimated_norm_scaling_factors = self.estimate_norm_scaling_factor(batch_size=2)
-        self.normalisation_factor = torch.tensor(
-            estimated_norm_scaling_factors,
-            device=cfg["device"],
-            dtype=torch.bfloat16,
-        )
+        self.layer_means = None
+        self.layer_stds = None
 
         self.refresh()
 
-    @torch.no_grad()
-    def estimate_norm_scaling_factor(
-        self, batch_size, n_batches_for_norm_estimate: int = 100
-    ):
-        norms_per_layer = [[] for _ in range(self.num_layers)]
-
-        token_generator = self.get_tokens_batch_generator(
-            n_batches_for_norm_estimate, batch_size
-        )
-
-        for tokens in tqdm.tqdm(
-            token_generator,
-            total=n_batches_for_norm_estimate,
-            desc="Estimating norm scaling factor",
-        ):
-            tokens = tokens.to(self.cfg["device"])
-
-            all_acts = []
-            for j in range(0, len(tokens), self.cfg["model_batch_size"]):
-                batch_tokens = tokens[j : j + self.cfg["model_batch_size"]]
-
-                with self.model.trace(batch_tokens) as tracer:
-                    layer_outputs = []
-                    for layer_idx in range(self.num_layers):
-                        layer_out = get_layer_output(self.model, layer_idx, tracer)
-                        layer_outputs.append(layer_out)
-
-                batch_acts = torch.stack(layer_outputs, dim=2)
-
-                if self.cfg.get("drop_bos", True):
-                    batch_acts = batch_acts[:, 1:, :, :]
-
-                batch_acts = batch_acts.reshape(-1, self.num_layers, self.resid_dim)
-                all_acts.append(batch_acts)
-
-            acts = torch.cat(all_acts, dim=0)
-            # Compute per-layer norms
-            layer_norms = acts.norm(dim=-1)  # Shape: (batch, num_layers)
-            for layer_idx in range(self.num_layers):
-                norms_per_layer[layer_idx].append(
-                    layer_norms[:, layer_idx].mean().item()
-                )
-
-        scaling_factors = []
-        for layer_idx in range(self.num_layers):
-            mean_norm = np.mean(norms_per_layer[layer_idx])
-            scaling_factor = mean_norm / math.sqrt(self.resid_dim)
-            scaling_factors.append(scaling_factor)
-
-        return scaling_factors
-
-    def get_tokens_batch_generator(self, n_batches, batch_size):
-        """
-        A generator that yields batches of tokens.
-        This avoids loading the entire dataset into memory.
-        """
-        batch_count = 0
-        while batch_count < n_batches:
-            tokens = []
-            count = 0
-
-            while count < batch_size:
-                try:
-                    item = next(self.dataset_iter)
-                except StopIteration:
-                    self.dataset_iter = iter(self.dataset)
-                    item = next(self.dataset_iter)
-
-                text = item["text"]
-                if len(text.strip()) < 50:
-                    continue
-
-                token_ids = self.model.tokenizer.encode(
-                    text,
-                    return_tensors="pt",
-                    max_length=self.context,
-                    truncation=True,
-                    padding="max_length",
-                )
-                tokens.append(token_ids)
-                count += 1
-
-            yield torch.cat(tokens, dim=0)
-            batch_count += 1
-
-    @torch.no_grad()
-    def refresh(self):
-        tokens = self.get_tokens_batch()
-        self.buffer.zero_()
-        pointer = 0
-
-        for i in tqdm.tqdm(
-            range(0, len(tokens), self.cfg["model_batch_size"]),
-            desc="Refreshing Buffer",
-        ):
-            batch_tokens = tokens[i : i + self.cfg["model_batch_size"]].to(
-                self.cfg["device"]
-            )
-
-            if self.cfg.get("drop_bos", True):
-                num_tokens_in_batch = batch_tokens.shape[0] * (
-                    batch_tokens.shape[1] - 1
-                )
-            else:
-                num_tokens_in_batch = batch_tokens.shape[0] * batch_tokens.shape[1]
-
-            if pointer + num_tokens_in_batch > self.buffer_size:
-                break
-
-            with self.model.trace(batch_tokens) as tracer:
-                for layer_idx in range(self.num_layers):
-                    layer_out = get_layer_output(self.model, layer_idx, tracer)
-
-                    if self.cfg.get("drop_bos", True):
-                        layer_out = layer_out[:, 1:, :]
-
-                    reshaped_layer_out = layer_out.reshape(-1, self.resid_dim)
-
-                    self.buffer[
-                        pointer : pointer + num_tokens_in_batch, layer_idx, :
-                    ] = reshaped_layer_out.to(self.cfg["dtype"])
-
-            pointer += num_tokens_in_batch
-
-        perm = torch.randperm(pointer, device=self.cfg["device"])
-        self.buffer[:pointer] = self.buffer[:pointer][perm]
-        self.pointer = 0
-        torch.cuda.empty_cache()
-
-    @torch.no_grad()
-    def next(self):
-        if self.pointer + self.cfg["batch_size"] > len(self.buffer):
-            self.refresh()
-
-        batch = self.buffer[self.pointer : self.pointer + self.cfg["batch_size"]]
-        self.pointer += self.cfg["batch_size"]
-
-        if self.normalize:
-            batch = batch / self.normalisation_factor[None, :, None]
-
-        return batch.to(self.cfg["device"])
-
-    def get_tokens_batch(self):
+    def get_tokens(self, n_samples):
+        """Get tokenized batch"""
         tokens = []
-        count = 0
-        max_samples = self.buffer_batches
-
-        while count < max_samples:
+        for _ in range(n_samples):
             try:
                 item = next(self.dataset_iter)
             except StopIteration:
                 self.dataset_iter = iter(self.dataset)
-                continue
+                item = next(self.dataset_iter)
 
             text = item["text"]
             if len(text.strip()) < 50:
                 continue
 
-            token_ids = self.model.tokenizer.encode(
+            toks = self.model.tokenizer.encode(
                 text,
                 return_tensors="pt",
                 max_length=self.context,
                 truncation=True,
                 padding="max_length",
             )
-            tokens.append(token_ids)
-            count += 1
+            tokens.append(toks)
 
-        return torch.cat(tokens, dim=0) if tokens else torch.empty(0)
+        return torch.cat(tokens, dim=0)
+
+    @torch.no_grad()
+    def refresh(self):
+        print("Refreshing buffer...")
+        self.pointer = 0
+        n_samples = self.buffer_size // self.context
+
+        tokens = self.get_tokens(n_samples).to(self.cfg.device)
+
+        with self.model.trace(tokens):
+            layer_acts = [
+                self.model.transformer.h[i].output[0].save()
+                for i in range(self.num_layers)
+            ]
+
+        all_acts = torch.stack(layer_acts, dim=2)
+
+        all_acts = all_acts.reshape(-1, self.num_layers, self.resid)
+
+        if self.layer_stds is None:
+            # Only calculate standard deviation, not the mean
+            self.layer_stds = all_acts.std(dim=0, keepdim=True) + 1e-8
+            print(
+                f"  Std range: [{self.layer_stds.min():.4f}, {self.layer_stds.max():.4f}]"
+            )
+
+        all_acts = all_acts / self.layer_stds
+
+        self.buffer[: len(all_acts)] = all_acts[: self.buffer_size]
+
+        perm = torch.randperm(self.buffer_size, device=self.cfg.device)
+        self.buffer = self.buffer[perm]
+
+    @torch.no_grad()
+    def next(self):
+        if self.pointer + self.cfg.batch_size > self.buffer_size:
+            self.refresh()
+
+        batch = self.buffer[self.pointer : self.pointer + self.cfg.batch_size]
+        self.pointer += self.cfg.batch_size
+        return batch
 
 
 class Trainer:
-    def __init__(self, cfg, use_wandb=True, resume_from=None):
-        self.cfg = cfg
-        if self.cfg["model_name"] == "gpt2":
-            self.model = LanguageModel("gpt2", device_map="auto")
-        elif self.cfg["model_name"] == "pythia":
-            self.model = LanguageModel(
-                "EleutherAI/pythia-2.8b-deduped", device_map="auto"
+    def __init__(self, cfg: cc_config):
+        self.cfg: cc_config = cfg
+        torch.manual_seed(cfg.seed)
+
+        self.run_dir = self._get_next_run_dir()
+        print(f"Saving checkpoints to: {self.run_dir}")
+
+        print("Initializing crosscoder model...")
+        self.crosscoder = Crosscoder_Model(cfg).to(cfg.device)
+
+        print(f"Loading {cfg.model}...")
+        if cfg.model == "gpt2":
+            self.lm = LanguageModel("openai-community/gpt2", device_map=cfg.device)
+        elif cfg.model == "gemma2-2b":
+            self.lm = LanguageModel("google/gemma-2-2b", device_map=cfg.device)
+        else:
+            raise ValueError(f"Model {cfg.model} not supported")
+
+        print("Initializing buffer...")
+        self.buffer = Buffer(cfg, self.lm)
+
+        if cfg.optim == "AdamW":
+            self.optimizer = torch.optim.AdamW(
+                self.crosscoder.parameters(),
+                lr=cfg.lr,
+                betas=(0.9, 0.999),
+                weight_decay=0.0,
             )
-        elif self.cfg["model_name"] == "gemma3-4b":
-            self.model = LanguageModel("google/gemma-2-9b", device_map="auto")
-        elif self.cfg["model_name"] == "qwen3-4b":
-            self.model = LanguageModel("Qwen/Qwen2.5-3B", device_map="auto")
-        elif self.cfg["model_name"] == "gemma2-2b":
-            self.model = LanguageModel("google/gemma-2-2b", device_map="auto")
-
-        self.context = self.cfg["context"]
-        self.crosscoder = Crosscoder(cfg, model=self.model)
-        self.buffer = Buffer(cfg, model=self.model)
-        self.total_steps = cfg["total_steps"]
-        self.use_wandb = use_wandb
-
-        if resume_from is None:
-            self.crosscoder.initialize_b_enc(
-                self.buffer,
-                initial_approx_firing_pct=cfg.get("initial_approx_firing_pct", 0.25),
-                n_tokens=cfg.get("n_tokens_for_bias_init", 5000),
-            )
-
-        self.optimizer = torch.optim.Adam(
-            self.crosscoder.parameters(),
-            lr=cfg["lr"],
-            betas=(cfg["beta1"], cfg["beta2"]),
-            weight_decay=0.0,
-        )
+        else:
+            raise ValueError(f"Optimizer {cfg.optim} not supported")
 
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
-            self.optimizer, self.lr_lambda
+            self.optimizer, lr_lambda=lambda step: self._get_lr_multiplier(step)
         )
+        self.steps = cfg.steps
 
-        self.step_counter: int = 0
+        wandb.init(
+            project="crosscoder",
+            config=cfg.__dict__,
+            name=f"{cfg.model}_ae{cfg.ae_dim}",
+        )
+        wandb.watch(self.crosscoder, log="all", log_freq=self.cfg.log_interval)
 
-        if resume_from is not None:
-            self.load_checkpoint(resume_from)
+        self.step = 0
 
-        if use_wandb:
-            WANDB_DIR.mkdir(exist_ok=True)
-            wandb.init(
-                project="crosscroders",
-                entity="rohan-kathuria-neu",
-                config=cfg,
-                dir=str(WANDB_DIR),
-                resume="allow" if resume_from else None,
-                id=Path(resume_from).parent.name if resume_from else None,
-            )
+    def _get_next_run_dir(self) -> Path:
+        """Find the next available run_n directory"""
+        checkpoints_dir = Path("./checkpoints")
+        checkpoints_dir.mkdir(exist_ok=True)
 
-    def lr_lambda(self, step):
-        if step < 0.05 * self.total_steps:
-            return step / (0.05 * self.total_steps)
-        elif step < 0.8 * self.total_steps:
-            return 1.0
+        # Find all existing run directories
+        existing_runs = [
+            d
+            for d in checkpoints_dir.iterdir()
+            if d.is_dir() and d.name.startswith("run_")
+        ]
+
+        if not existing_runs:
+            run_num = 0
         else:
-            return 1.0 - (step - 0.8 * self.total_steps) / (0.2 * self.total_steps)
+            run_numbers = []
+            for run_dir in existing_runs:
+                try:
+                    num = int(run_dir.name.split("_")[1])
+                    run_numbers.append(num)
+                except (IndexError, ValueError):
+                    continue
+
+            run_num = max(run_numbers) + 1 if run_numbers else 0
+
+        run_dir = checkpoints_dir / f"run_{run_num}"
+        run_dir.mkdir(exist_ok=True)
+
+        return run_dir
+
+    def _get_lr_multiplier(self, step: int) -> float:
+        if step < self.cfg.warmup_steps:
+            return step / self.cfg.warmup_steps
+        return 1.0
 
     def get_l1_coeff(self):
-        return self.cfg["l_s_coefficient"] * self.step_counter / self.total_steps
-
-    def get_l0_coeff(self):
-        if self.step_counter < 0.05 * self.total_steps:
-            return (
-                self.cfg["l0_coefficient"]
-                * self.step_counter
-                / (0.04 * self.total_steps)
-            )
+        if self.step < 0.05 * self.steps:
+            return self.cfg.l1_coeff * self.step / (0.05 * self.steps)
         else:
-            return self.cfg["l0_coefficient"]
+            return self.cfg.l1_coeff
 
-    def step(self):
-        acts = self.buffer.next()
-        acts = acts.to(dtype=self.cfg["dtype"], device=self.cfg["device"])
+    def calculate_sparsity(self, acts: torch.Tensor):
+        active = (acts > 0).float().sum(dim=-1).mean()
+        return active.item()
 
-        lambda_s = self.get_l1_coeff()
-        lambda_p = self.cfg["l_p_coefficient"]
+    def calculate_dead_features(self, acts: torch.Tensor):
+        num_dead = (acts.sum(dim=0) == 0).sum().item()
+        return num_dead
 
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            losses = self.crosscoder.return_loss(acts)
+    def train_step(self):
+        self.crosscoder.train()
 
-            loss = (
-                losses.reconstruction_loss
-                + (lambda_s * losses.sparsity_loss)
-                + (lambda_p * losses.pre_act_loss)
-            )
+        batch = self.buffer.next()  # [batch_size, num_layers, resid]
 
+        debug = self.step == 0
+        loss_out = self.crosscoder.get_loss(batch, debug=debug)
+        loss = (
+            loss_out.recon_loss
+            + self.get_l1_coeff() * loss_out.sparsity_loss
+            + self.cfg.l_p * loss_out.preact_loss
+        )
+
+        self.optimizer.zero_grad()
         loss.backward()
         clip_grad_norm_(self.crosscoder.parameters(), max_norm=1.0)
-
         self.optimizer.step()
-        with torch.no_grad():
-            w_dec_flat = self.crosscoder.W_dec.view(self.crosscoder.ae_dim, -1)
-            w_dec_flat = F.normalize(w_dec_flat, p=2, dim=1)
-            self.crosscoder.W_dec.data = w_dec_flat.view_as(self.crosscoder.W_dec.data)
-
         self.scheduler.step()
-        self.optimizer.zero_grad()
 
         with torch.no_grad():
-            preacts, encoded_acts = self.crosscoder.encode(acts)
+            acts = self.crosscoder.encode(batch)
+            sparsity = self.calculate_sparsity(acts)
+            dead_features = self.calculate_dead_features(acts)
 
-        mse = losses.reconstruction_loss.item() / (acts.shape[1] * acts.shape[2])
-
-        mean_sparsity_loss = losses.sparsity_loss.item() / self.crosscoder.ae_dim
-        mean_pre_act_loss = losses.pre_act_loss.item() / self.crosscoder.ae_dim
-
-        total_avg_loss = (
-            mse + (lambda_s * mean_sparsity_loss) + (lambda_p * mean_pre_act_loss)
-        )
-
-        loss_dict = {
-            "loss": loss.item(),
-            "l2_loss (recon)": losses.reconstruction_loss.item(),
-            "sparsity_loss": losses.sparsity_loss.item(),
-            "pre_act_loss": losses.pre_act_loss.item(),
-            "avg_loss/total_scaled_avg": total_avg_loss,
-            "avg_loss/mse": mse,
-            "avg_loss/mean_sparsity": mean_sparsity_loss,
-            "avg_loss/mean_pre_act": mean_pre_act_loss,
-            "hyperparams/lambda_s": lambda_s,
-            "hyperparams/lambda_p": lambda_p,
+        return {
+            "losses/loss": loss.item(),
+            "losses/recon_loss": loss_out.recon_loss.item(),
+            "losses/sparsity_loss": loss_out.sparsity_loss.item(),
+            "losses/preact_loss": self.cfg.l_p * loss_out.preact_loss.item(),
+            "stats/l0_sparsity": sparsity,
+            "stats/dead_features": dead_features,
             "hyperparams/lr": self.scheduler.get_last_lr()[0],
-            "metrics/sparsity": (encoded_acts > 0).float().mean().item(),
+            "hyperparams/l1_coeff": self.get_l1_coeff(),
+            "stats/W_dec_norm": self.crosscoder.W_dec.norm(),
         }
-
-        self.step_counter += 1
-
-        # Clear CUDA cache every 5 steps to prevent memory fragmentation
-        if self.step_counter % 5 == 0 and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        return loss_dict
-
-    def log(self, loss_dict):
-        if self.use_wandb:
-            wandb.log(loss_dict, step=self.step_counter)
-
-    def save(self):
-        self.crosscoder.save()
-
-    def save_checkpoint(self, step=None):
-        """Save complete training checkpoint including optimizer, scheduler, and RNG states"""
-        if self.crosscoder.save_dir is None:
-            SAVE_DIR.mkdir(parents=True, exist_ok=True)
-            version_list = [
-                int(file.name.split("_")[1])
-                for file in list(SAVE_DIR.iterdir())
-                if "version" in str(file)
-            ]
-            if len(version_list):
-                version = 1 + max(version_list)
-            else:
-                version = 0
-            self.crosscoder.save_dir = SAVE_DIR / f"version_{version}"
-            self.crosscoder.save_dir.mkdir(parents=True, exist_ok=True)
-
-        step = step if step is not None else self.step_counter
-        checkpoint_path = self.crosscoder.save_dir / f"checkpoint_{step}.pt"
-
-        # Save complete training state
-        checkpoint = {
-            # Model weights
-            "W_enc": self.crosscoder.W_enc.data,
-            "W_dec": self.crosscoder.W_dec.data,
-            "b_enc": self.crosscoder.b_enc.data,
-            "b_dec": self.crosscoder.b_dec.data,
-            "log_threshold": self.crosscoder.log_threshold.data,
-            # Training state
-            "step_counter": self.step_counter,
-            "optimizer_state": self.optimizer.state_dict(),
-            "scheduler_state": self.scheduler.state_dict(),
-            # RNG states for reproducibility
-            "torch_rng_state": torch.get_rng_state(),
-            "numpy_rng_state": np.random.get_state(),
-            # Config
-            "cfg": self.cfg,
-        }
-
-        # Add CUDA RNG state if using GPU
-        if torch.cuda.is_available():
-            checkpoint["cuda_rng_state"] = torch.cuda.get_rng_state()
-
-        torch.save(checkpoint, checkpoint_path)
-
-        # Create/update 'latest' symlink
-        latest_path = self.crosscoder.save_dir / "latest.pt"
-        if latest_path.exists() or latest_path.is_symlink():
-            latest_path.unlink()
-        latest_path.symlink_to(checkpoint_path.name)
-
-        print(f"Checkpoint saved: {checkpoint_path}")
-
-    def load_checkpoint(self, checkpoint_path):
-        """Load complete training checkpoint and restore all states"""
-        print(f"Loading checkpoint from: {checkpoint_path}")
-        checkpoint = torch.load(
-            checkpoint_path, map_location=self.cfg["device"], weights_only=False
-        )
-
-        # Restore model weights
-        self.crosscoder.W_enc.data = checkpoint["W_enc"]
-        self.crosscoder.W_dec.data = checkpoint["W_dec"]
-        self.crosscoder.b_enc.data = checkpoint["b_enc"]
-        self.crosscoder.b_dec.data = checkpoint["b_dec"]
-        self.crosscoder.log_threshold.data = checkpoint["log_threshold"]
-
-        # Restore training state
-        self.step_counter = checkpoint["step_counter"]
-        self.optimizer.load_state_dict(checkpoint["optimizer_state"])
-        self.scheduler.load_state_dict(checkpoint["scheduler_state"])
-
-        # Restore RNG states for reproducibility
-        # Wrap in try-except to handle old checkpoints with incompatible RNG format
-        try:
-            torch_rng_state = checkpoint["torch_rng_state"]
-            if not isinstance(torch_rng_state, torch.ByteTensor):
-                torch_rng_state = torch_rng_state.byte()
-            torch.set_rng_state(torch_rng_state)
-
-            np.random.set_state(checkpoint["numpy_rng_state"])
-
-            if torch.cuda.is_available() and "cuda_rng_state" in checkpoint:
-                cuda_rng_state = checkpoint["cuda_rng_state"]
-                if not isinstance(cuda_rng_state, torch.ByteTensor):
-                    cuda_rng_state = cuda_rng_state.byte()
-                torch.cuda.set_rng_state(cuda_rng_state)
-            print("RNG states restored successfully")
-        except (TypeError, RuntimeError) as e:
-            print(f"Warning: Could not restore RNG states from checkpoint: {e}")
-            print("Training will continue but won't have exact reproducibility")
-
-        # Set crosscoder's save_dir to the checkpoint's directory
-        self.crosscoder.save_dir = Path(checkpoint_path).parent
-
-        print(f"Resumed from step {self.step_counter}")
 
     def train(self):
-        start_step = self.step_counter
-        try:
-            # Use tqdm with initial value if resuming
-            pbar = tqdm.tqdm(initial=start_step, total=self.total_steps)
-            for i in range(start_step, self.total_steps):
-                loss_dict = self.step()
-                pbar.update(1)
+        print(f"Starting training for {self.cfg.steps} steps...")
 
-                if i % self.cfg["log_interval"] == 0:
-                    self.log(loss_dict)
-                if (i + 1) % self.cfg["save_interval"] == 0:
-                    print(f"Saving checkpoint at step {i + 1}")
-                    self.save_checkpoint(step=i + 1)
+        for step in range(self.cfg.steps):
+            self.step = step
 
-                if i % (self.cfg["log_interval"] * 10) == 0 and i > 0:
-                    print_gpu_memory(tag=f"Before Step {i + 1}")
-                    try:
-                        analysis = self.analyze()
-                        if self.use_wandb:
-                            wandb.log(
-                                {
-                                    "feature_analysis/mean_sparsity": analysis[
-                                        "mean_sparsity"
-                                    ],
-                                    "feature_analysis/sparsity_std": analysis[
-                                        "sparsity_std"
-                                    ],
-                                    "feature_analysis/dead_features": analysis[
-                                        "dead_features"
-                                    ],
-                                    "feature_analysis/max_layer_error": max(
-                                        analysis["layer_reconstruction_errors"]
-                                    ),
-                                },
-                                step=self.step_counter,
-                            )
-                    except Exception as e:
-                        print(f"Failed: {e}")
-            pbar.close()
+            metrics = self.train_step()
 
-        finally:
-            print(f"Saving final checkpoint at step {self.step_counter}")
-            self.save_checkpoint()
-            # Also save lightweight model weights
-            self.save()
+            if step % self.cfg.log_interval == 0:
+                wandb.log(metrics, step=step)
 
-    def analyze(self, n_samples=1000):
-        sample_acts = self.buffer.next()[:n_samples]
-        sample_acts = sample_acts.to(dtype=self.cfg["dtype"], device=self.cfg["device"])
+                (
+                    print(
+                        f"Step {step}/{self.cfg.steps} | "
+                        f"Loss: {metrics['losses/loss']:.4f} | "
+                        f"Recon: {metrics['losses/recon_loss']:.4f} | "
+                        f"Preact Loss: {metrics['losses/preact_loss']:.4f} | "
+                        f"Sparsity Loss: {metrics['losses/sparsity_loss']:.4f} | "
+                        f"L0: {metrics['stats/l0_sparsity']:.1f} | "
+                        f"Dead Features: {metrics['stats/dead_features']:.1f}"
+                    ),
+                )
 
-        with torch.no_grad():
-            preacts, encoded = self.crosscoder.encode(sample_acts)
-            feature_sparsity = (encoded > 0).float().mean(dim=0)
+            if step % self.cfg.save_interval == 0 and step > 0:
+                self.save_checkpoint(step)
 
-            most_active = torch.argsort(feature_sparsity, descending=True)[:10]
-            least_active = torch.argsort(feature_sparsity, descending=False)[:10]
+        print("Training complete!")
+        wandb.finish()
 
-            reconstructed = self.crosscoder.decode(encoded)
-            recon_error = F.mse_loss(reconstructed, sample_acts, reduction="none")
-            layer_recon_error = recon_error.mean(dim=[0, 2])
+    def save_checkpoint(self, step: int):
+        print("Saving checkpoint...")
+        checkpoint_path = self.run_dir / f"crosscoder_step_{step}.pt"
 
-            analysis = {
-                "mean_sparsity": feature_sparsity.mean().item(),
-                "sparsity_std": feature_sparsity.std().item(),
-                "most_active_features": most_active.tolist(),
-                "least_active_features": least_active.tolist(),
-                "layer_reconstruction_errors": layer_recon_error.tolist(),
-                "dead_features": (feature_sparsity < 1e-6).sum().item(),
-                "total_features": len(feature_sparsity),
-            }
+        torch.save(
+            {
+                "step": step,
+                "model_state_dict": self.crosscoder.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "config": self.cfg,
+            },
+            checkpoint_path,
+        )
 
-            return analysis
+        print(f"Saved checkpoint to {checkpoint_path}")

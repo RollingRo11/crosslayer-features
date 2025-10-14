@@ -13,7 +13,7 @@ from nnsight import LanguageModel
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from crosscoder.newcrosscoder import Crosscoder_Model as Crosscoder
+from crosscoder.crosscoder import Crosscoder_Model as Crosscoder
 from torch import Tensor
 from tqdm.auto import tqdm
 

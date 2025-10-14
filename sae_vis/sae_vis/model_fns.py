@@ -12,7 +12,7 @@ from .model_utils import get_unembedding_matrix
 import sys
 
 sys.path.append("..")
-from crosscoder.crosscoder import Crosscoder
+from crosscoder.crosscoder import Crosscoder_Model as Crosscoder
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
