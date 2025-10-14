@@ -24,10 +24,3 @@ To train a crosscoder, first login with the huggingface CLI, then run `crosscode
 
 #### Visualization
 To visualize crosscoder latents, run `generate_vis.py --help` and then set your desired hyperparameters with each argparse flag.
-
----
-
-### Acknowledgements
-
-- Thank you to Neel Nanda for being the (afaik) first person to upload their Crosscoder code. A lot of other implementations have been written based on his.
-- Thank you to Claude code for adapting [SAE_VIS](https://github.com/callummcdougall/sae_vis) to work with my crosscoder!
