@@ -14,16 +14,25 @@ body {
 }
 
 #vis-container {
-    max-width: 1600px;
+    max-width: 100%;
     margin: 0 auto;
-    padding: 20px;
+    padding: 15px;
+}
+
+/* Main content grid - side by side layout */
+.main-content {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 15px;
+    height: calc(100vh - 140px);
+    align-items: start;
 }
 
 /* Header with feature selector */
 .header {
     background: white;
-    padding: 20px;
-    margin-bottom: 20px;
+    padding: 15px;
+    margin-bottom: 15px;
     border-radius: 8px;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     display: flex;
@@ -126,28 +135,27 @@ button#sort-low.active:hover {
 /* Feature info container - combines info and histogram */
 #feature-info-container {
     background: white;
-    padding: 20px;
-    margin-bottom: 20px;
+    padding: 15px;
     border-radius: 8px;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     display: flex;
-    gap: 30px;
-    align-items: flex-start;
+    flex-direction: column;
+    gap: 15px;
+    height: 100%;
+    overflow-y: auto;
 }
 
 /* Feature info section */
 #feature-info {
-    width: 320px;
-    flex-shrink: 0;
+    width: 100%;
 }
 
 /* Graphs column */
 .graphs-column {
-    flex: 1;
-    min-width: 600px;
+    width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 15px;
 }
 
 .feature-header h1 {
@@ -227,23 +235,26 @@ button#sort-low.active:hover {
 /* Top activations */
 #top-activations {
     background: white;
-    padding: 20px;
+    padding: 15px;
     border-radius: 8px;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
 }
 
 #top-activations h3 {
-    font-size: 16px;
+    font-size: 11px;
     font-weight: 600;
-    margin-bottom: 20px;
-    color: #333;
+    margin-bottom: 12px;
+    color: #666;
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
 
 .activation-sequence {
-    margin-bottom: 4px;
-    padding: 2px 0;
+    margin-bottom: 2px;
+    padding: 1px 0;
     transition: all 0.2s;
 }
 
@@ -261,8 +272,8 @@ button#sort-low.active:hover {
 .tokens {
     display: flex;
     font-family: 'Monaco', 'Courier New', monospace;
-    font-size: 11px;
-    line-height: 1.6;
+    font-size: 9px;
+    line-height: 1.4;
 }
 
 .tokens-before {
@@ -287,8 +298,8 @@ button#sort-low.active:hover {
 }
 
 .token.max-activation {
-    background-color: rgba(255, 165, 0, 0.8) !important;
-    color: black;
+    background-color: rgba(0, 150, 136, 0.8) !important;
+    color: white;
     font-weight: 600;
     padding: 2px 3px;
     border-radius: 2px;
@@ -313,12 +324,12 @@ button#sort-low.active:hover {
 }
 
 .activation-value {
-    font-size: 11px;
+    font-size: 9px;
     font-weight: 400;
     color: #888;
-    min-width: 45px;
+    min-width: 40px;
     text-align: right;
-    padding-left: 15px;
+    padding-left: 10px;
 }
 
 /* Cross-layer trajectory */
@@ -351,17 +362,10 @@ button#sort-low.active:hover {
 }
 
 /* Responsive design */
-@media (max-width: 1200px) {
-    #feature-info-container {
-        flex-direction: column;
-    }
-    
-    #feature-info {
-        width: 100%;
-    }
-    
-    .graphs-column {
-        width: 100%;
+@media (max-width: 1400px) {
+    .main-content {
+        grid-template-columns: 1fr;
+        gap: 15px;
     }
 }
 
@@ -369,16 +373,16 @@ button#sort-low.active:hover {
     .stats-grid {
         grid-template-columns: repeat(2, 1fr);
     }
-    
+
     .percentiles {
         grid-template-columns: 1fr;
     }
-    
+
     .sequence-content {
         flex-direction: column;
         align-items: flex-start;
     }
-    
+
     .activation-value {
         align-self: flex-end;
     }

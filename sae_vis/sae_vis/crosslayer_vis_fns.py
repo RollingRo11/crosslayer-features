@@ -20,11 +20,9 @@ from pathlib import Path
 
 from .data_storing_fns import (
     CrossLayerDecoderNormsData,
-    CrossLayerActivationHeatmapData,
     CrossLayerAggregatedActivationData,
     CrossLayerDLAData,
     CrossLayerFeatureCorrelationData,
-    DecoderNormCosineSimilarityData,
 )
 
 
@@ -47,42 +45,6 @@ def compute_decoder_norms(crosscoder, feature_indices: List[int]) -> CrossLayerD
         feature_indices=feature_indices,
         decoder_norms=norms_data,
         n_layers=crosscoder.num_layers,
-    )
-
-
-def compute_activation_heatmap(
-    crosscoder,
-    model,
-    feature_idx: int,
-    tokens: Int[Tensor, "batch seq"],
-    token_strings: List[str],
-) -> CrossLayerActivationHeatmapData:
-    """
-    Compute activation heatmap for a single feature across layers and tokens.
-    Simplified version that creates a synthetic heatmap based on decoder weights.
-    """
-    n_layers = crosscoder.num_layers
-    seq_len = min(len(token_strings), 50)  # Limit sequence length
-
-    # Create a synthetic heatmap based on decoder norms
-    # This avoids expensive recomputation
-    decoder_weights = crosscoder.W_dec[feature_idx]  # (n_layers, d_model)
-    layer_norms = torch.norm(decoder_weights, dim=1).float().cpu().numpy()
-
-    # Create activation matrix with some variation
-    layer_acts = []
-    for layer_idx in range(n_layers):
-        # Create synthetic activations that vary by position
-        layer_strength = layer_norms[layer_idx]
-        position_variation = np.sin(np.linspace(0, 2*np.pi, seq_len)) * 0.3 + 0.7
-        layer_acts_seq = (layer_strength * position_variation).tolist()
-        layer_acts.append(layer_acts_seq)
-
-    return CrossLayerActivationHeatmapData(
-        feature_idx=feature_idx,
-        token_strings=token_strings[:seq_len],
-        activation_matrix=layer_acts,  # [n_layers, seq_len]
-        n_layers=n_layers,
     )
 
 
@@ -216,33 +178,6 @@ def create_decoder_norms_plot(data: CrossLayerDecoderNormsData) -> dict:
     return data.data()
 
 
-def create_activation_heatmap_plot(data: CrossLayerActivationHeatmapData) -> str:
-    """Create Plotly figure for activation heatmap and return as HTML string."""
-    fig = go.Figure(data=go.Heatmap(
-        z=data.activation_matrix,
-        x=data.token_strings,
-        y=[f"Layer {i}" for i in range(data.n_layers)],
-        colorscale='Viridis',
-        text=np.round(data.activation_matrix, 3),
-        texttemplate="%{text}",
-        textfont={"size": 8},
-        hovertemplate="Token: %{x}<br>Layer: %{y}<br>Activation: %{z:.3f}<extra></extra>"
-    ))
-
-    fig.update_layout(
-        title=f"Activation Heatmap for Feature {data.feature_idx}",
-        xaxis_title="Token Position",
-        yaxis_title="Layer",
-        template="plotly_white",
-        width=1200,
-        height=600,
-    )
-
-    fig.update_xaxes(tickangle=-45)
-
-    return fig.to_html(include_plotlyjs='cdn')
-
-
 def create_aggregated_activation_plot(data: CrossLayerAggregatedActivationData) -> str:
     """Create Plotly figure for aggregated activations and return as HTML string."""
     fig = go.Figure()
@@ -348,70 +283,3 @@ def create_correlation_heatmap_plot(data: CrossLayerFeatureCorrelationData) -> s
     return fig.to_html(include_plotlyjs='cdn')
 
 
-def compute_decoder_norm_cosine_similarity(
-    crosscoder,
-    feature_idx: int,
-) -> DecoderNormCosineSimilarityData:
-    """
-    Compute cosine similarity between decoder weight directions across layers for a single feature.
-
-    For a single feature, the decoder has shape (n_layers, d_model).
-    We compute the cosine similarity between the decoder weight vectors at different layers.
-    This shows how similar the feature's representation direction is across layers.
-
-    Args:
-        crosscoder: Crosscoder model
-        feature_idx: The feature index to analyze
-
-    Returns:
-        DecoderNormCosineSimilarityData with (n_layers, n_layers) cosine similarity matrix
-    """
-    n_layers = crosscoder.num_layers
-
-    # Get decoder weights for this feature across all layers
-    # Shape: (n_layers, d_model)
-    decoder_weights = crosscoder.W_dec[feature_idx]
-
-    # Normalize each layer's decoder weight vector
-    # Shape: (n_layers, d_model)
-    norms = torch.norm(decoder_weights, dim=1, keepdim=True)
-    norms = torch.where(norms == 0, torch.ones_like(norms), norms)  # Avoid division by zero
-    normalized_weights = decoder_weights / norms
-
-    # Compute cosine similarity matrix between all pairs of layers
-    # Shape: (n_layers, n_layers)
-    cosine_sim_matrix = (normalized_weights @ normalized_weights.T).float().cpu().numpy()
-
-    return DecoderNormCosineSimilarityData(
-        cosine_similarity_matrix=cosine_sim_matrix.tolist(),
-        feature_idx=feature_idx,
-        n_layers=n_layers,
-    )
-
-
-def create_decoder_norm_cosine_similarity_plot(data: DecoderNormCosineSimilarityData) -> str:
-    """Create Plotly figure for decoder norm cosine similarity heatmap."""
-    fig = go.Figure(data=go.Heatmap(
-        z=data.cosine_similarity_matrix,
-        x=[f"F{i}" for i in data.feature_indices],
-        y=[f"F{i}" for i in data.feature_indices],
-        colorscale='RdBu',
-        zmid=0,
-        zmin=-1,
-        zmax=1,
-        text=np.round(data.cosine_similarity_matrix, 3),
-        texttemplate="%{text}",
-        textfont={"size": 8},
-        hovertemplate="Feature %{x} - Feature %{y}<br>Cosine Similarity: %{z:.3f}<extra></extra>"
-    ))
-
-    fig.update_layout(
-        title=f"Decoder Norm Cosine Similarity ({data.n_features} Features)",
-        xaxis_title="Feature Index",
-        yaxis_title="Feature Index",
-        template="plotly_white",
-        width=800,
-        height=800,
-    )
-
-    return fig.to_html(include_plotlyjs='cdn')

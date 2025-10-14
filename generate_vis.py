@@ -48,6 +48,7 @@ def load_latest_checkpoint(device=None, checkpoint_path=None):
                 # Sort by run number to get most recent
                 def sort_key(path):
                     return int(path.name.split("_")[1])
+
                 run_folders.sort(key=sort_key)
                 latest_run = run_folders[-1]
 
@@ -59,17 +60,22 @@ def load_latest_checkpoint(device=None, checkpoint_path=None):
                     # Find highest numbered checkpoint
                     checkpoints = list(latest_run.glob("checkpoint_*.pt"))
                     if checkpoints:
-                        checkpoint_path = max(checkpoints, key=lambda p: int(p.stem.split("_")[1]))
+                        checkpoint_path = max(
+                            checkpoints, key=lambda p: int(p.stem.split("_")[1])
+                        )
 
         # Fallback to old structure (crosscoder/saves/version_N/)
         if checkpoint_path is None:
             saves_dir = Path("crosscoder/saves")
             version_folders = list(saves_dir.glob("version_*"))
             if not version_folders:
-                raise ValueError(f"No checkpoints found in {checkpoints_dir} or {saves_dir}")
+                raise ValueError(
+                    f"No checkpoints found in {checkpoints_dir} or {saves_dir}"
+                )
 
             def sort_key(path):
                 return int(path.name.split("_")[1])
+
             version_folders.sort(key=sort_key)
             latest_version_folder = version_folders[-1]
 
@@ -98,13 +104,15 @@ def load_latest_checkpoint(device=None, checkpoint_path=None):
     from crosscoder import crosscoder
 
     # Create module alias to handle old pickle references
-    sys.modules['newcrosscoder'] = crosscoder
-    if '__main__' not in sys.modules:
-        sys.modules['__main__'] = sys.modules[__name__]
+    sys.modules["newcrosscoder"] = crosscoder
+    if "__main__" not in sys.modules:
+        sys.modules["__main__"] = sys.modules[__name__]
 
     # Load checkpoint with appropriate device mapping
     map_location = device if device == "cpu" else None
-    checkpoint = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
+    checkpoint = torch.load(
+        checkpoint_path, map_location=map_location, weights_only=False
+    )
 
     # Extract config from checkpoint
     cfg_dict = checkpoint.get("cfg", checkpoint.get("config", {}))
@@ -449,7 +457,9 @@ def main():
     print(f"Auto-detected device: {device}")
 
     # Load crosscoder with consistent device
-    crosscoder, crosscoder_cfg, model = load_latest_checkpoint(device=device, checkpoint_path=args.checkpoint)
+    crosscoder, crosscoder_cfg, model = load_latest_checkpoint(
+        device=device, checkpoint_path=args.checkpoint
+    )
     print(f"Loaded crosscoder with {crosscoder.ae_dim} features")
 
     # Verify model dimensions match crosscoder expectations
@@ -526,8 +536,6 @@ def main():
     print(
         f"\n🔄 Processing {len(tokens)} sequences with {len(selected_features)} features..."
     )
-    print(f"   This will take longer due to the large amount of data being processed.")
-    print(f"   The results will be much more interpretable!\n")
     try:
         vis_data = get_feature_data(
             model=model,

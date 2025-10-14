@@ -1182,18 +1182,18 @@ class CrosscoderVisData:
         <div class="header">
             <h2>Crosscoder Feature Visualization</h2>
         </div>
-        
-        <div id="feature-info-container">
-            <div id="feature-info"></div>
-            <div class="graphs-column">
-                <div id="histogram-container"></div>
-                <div id="cross-layer-trajectory"></div>
-                <div id="cross-layer-heatmap"></div>
-                <div id="decoder-norm-cosine-similarity"></div>
+
+        <div class="main-content">
+            <div id="feature-info-container">
+                <div id="feature-info"></div>
+                <div class="graphs-column">
+                    <div id="histogram-container"></div>
+                    <div id="cross-layer-trajectory"></div>
+                </div>
             </div>
+
+            <div id="top-activations"></div>
         </div>
-        
-        <div id="top-activations"></div>
     </div>
     
     <script>
@@ -1222,25 +1222,6 @@ class CrossLayerDecoderNormsData:
             "type": "decoderNorms",
             "feature_indices": self.feature_indices,
             "decoder_norms": self.decoder_norms,
-            "n_layers": self.n_layers
-        }
-
-
-@dataclass
-class CrossLayerActivationHeatmapData:
-    """Data for activation heatmap visualization (Plot 2)."""
-    feature_idx: int
-    token_strings: list[str]
-    activation_matrix: list[list[float]]  # [n_layers, seq_len]
-    n_layers: int
-
-    def data(self, **kwargs):
-        # Return data for JavaScript to render
-        return {
-            "type": "activationHeatmap",
-            "feature_idx": self.feature_idx,
-            "token_strings": self.token_strings,
-            "activation_matrix": self.activation_matrix,
             "n_layers": self.n_layers
         }
 
@@ -1302,17 +1283,3 @@ class CrossLayerFeatureCorrelationData:
         }
 
 
-@dataclass
-class DecoderNormCosineSimilarityData:
-    """Data for decoder norm cosine similarity heatmap."""
-    cosine_similarity_matrix: list[list[float]]
-    feature_idx: int
-    n_layers: int
-
-    def data(self, **kwargs):
-        return {
-            "type": "decoderNormCosineSimilarity",
-            "cosine_similarity_matrix": self.cosine_similarity_matrix,
-            "feature_idx": self.feature_idx,
-            "n_layers": self.n_layers
-        }

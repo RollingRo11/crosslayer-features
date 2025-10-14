@@ -819,11 +819,9 @@ def parse_feature_data(
     # ! New Cross-Layer Visualizations
     from .crosslayer_vis_fns import (
         compute_decoder_norms,
-        compute_activation_heatmap,
         compute_aggregated_activation,
         compute_direct_logit_attribution,
         compute_feature_correlation,
-        compute_decoder_norm_cosine_similarity,
     )
 
     # Plot 1: Decoder Norms
@@ -831,21 +829,6 @@ def parse_feature_data(
         decoder_norms_data = compute_decoder_norms(crosscoder, feature_indices)
         for feat in feature_indices:
             feature_data_dict[feat]["decoderNorms"] = decoder_norms_data
-
-    # Plot 2: Activation Heatmap
-    if layout.activation_heatmap_cfg is not None:
-        # Use the example text from config
-        example_text = layout.activation_heatmap_cfg.example_text
-        example_tokens = model.tokenizer(
-            example_text, return_tensors="pt", max_length=128, truncation=True
-        )["input_ids"]
-        token_strings = [model.tokenizer.decode([tid]) for tid in example_tokens[0]]
-
-        for feat in feature_indices:
-            heatmap_data = compute_activation_heatmap(
-                crosscoder, model, feat, example_tokens, token_strings
-            )
-            feature_data_dict[feat]["activationHeatmap"] = heatmap_data
 
     # Plot 3: Aggregated Activation
     if layout.aggregated_activation_cfg is not None:
@@ -880,15 +863,6 @@ def parse_feature_data(
         )
         for feat in feature_indices:
             feature_data_dict[feat]["featureCorrelation"] = correlation_data
-
-    # Decoder Norm Cosine Similarity Heatmap
-    if layout.decoder_norm_cosine_similarity_cfg is not None:
-        for feat in feature_indices:
-            cosine_sim_data = compute_decoder_norm_cosine_similarity(
-                crosscoder,
-                feature_idx=feat,
-            )
-            feature_data_dict[feat]["decoderNormCosineSimilarity"] = cosine_sim_data
 
     # Create the CrosscoderVisData object
     crosscoder_vis_data = CrosscoderVisData(

@@ -201,18 +201,6 @@ class CrossLayerDecoderNormsConfig(BaseComponentConfig):
 
 
 @dataclass
-class CrossLayerActivationHeatmapConfig(BaseComponentConfig):
-    """Configuration for activation heatmap (Plot 2)"""
-    example_text: str = "The quick brown fox jumps over the lazy dog."
-
-    @property
-    def help_dict(self) -> dict[str, str]:
-        return {
-            "example_text": "Text to use for generating the activation heatmap"
-        }
-
-
-@dataclass
 class CrossLayerAggregatedActivationConfig(BaseComponentConfig):
     """Configuration for aggregated activation profile (Plot 3)"""
     max_samples: int = 100
@@ -252,17 +240,6 @@ class CrossLayerFeatureCorrelationConfig(BaseComponentConfig):
             "max_samples": "Maximum number of samples to process",
             "batch_size": "Batch size for processing samples"
         }
-
-
-@dataclass
-class DecoderNormCosineSimilarityConfig(BaseComponentConfig):
-    """Configuration for decoder norm cosine similarity heatmap.
-
-    For a single feature, compares the decoder weight directions across all layers.
-    Shows how similar the feature's representation is at different layers.
-    """
-    pass
-
 
 
 @dataclass
@@ -393,11 +370,9 @@ class CrosscoderVisLayoutConfig:
 
     # New cross-layer visualization configs
     decoder_norms_cfg: CrossLayerDecoderNormsConfig | None = None
-    activation_heatmap_cfg: CrossLayerActivationHeatmapConfig | None = None
     aggregated_activation_cfg: CrossLayerAggregatedActivationConfig | None = None
     dla_cfg: CrossLayerDLAConfig | None = None
     feature_correlation_cfg: CrossLayerFeatureCorrelationConfig | None = None
-    decoder_norm_cosine_similarity_cfg: DecoderNormCosineSimilarityConfig | None = None
 
     COMPONENT_MAP: frozendict[str, str] = frozendict(
         {
@@ -411,11 +386,9 @@ class CrosscoderVisLayoutConfig:
             "LayerActivationPlot": "layer_activation_plot_cfg",
             "CrossLayerTrajectory": "cross_layer_trajectory_cfg",
             "CrossLayerDecoderNorms": "decoder_norms_cfg",
-            "CrossLayerActivationHeatmap": "activation_heatmap_cfg",
             "CrossLayerAggregatedActivation": "aggregated_activation_cfg",
             "CrossLayerDLA": "dla_cfg",
             "CrossLayerFeatureCorrelation": "feature_correlation_cfg",
-            "DecoderNormCosineSimilarity": "decoder_norm_cosine_similarity_cfg",
         }
     )
 
@@ -480,16 +453,12 @@ class CrosscoderVisLayoutConfig:
             # Handle cross-layer components
             elif component_name == "crossLayerDecoderNorms":
                 component_name = "decoderNorms"
-            elif component_name == "crossLayerActivationHeatmap":
-                component_name = "activationHeatmap"
             elif component_name == "crossLayerAggregatedActivation":
                 component_name = "aggregatedActivation"
             elif component_name == "crossLayerDLA":
                 component_name = "dla"
             elif component_name == "crossLayerFeatureCorrelation":
                 component_name = "featureCorrelation"
-            elif component_name == "decoderNormCosineSimilarity":
-                component_name = "decoderNormCosineSimilarity"
             return component_name
 
         layout = [
@@ -589,8 +558,6 @@ class CrosscoderVisLayoutConfig:
                     FeatureTablesConfig(),
                     ActsHistogramConfig(),
                     CrossLayerTrajectoryConfig(),
-                    CrossLayerActivationHeatmapConfig(),
-                    DecoderNormCosineSimilarityConfig(),
                     width=600  # Wider left column for both graphs
                 ),
                 Column(SeqMultiGroupConfig(), width=800),  # Sequences on the right
