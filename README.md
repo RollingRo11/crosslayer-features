@@ -30,5 +30,4 @@ To visualize crosscoder latents, run `generate_vis.py --help` and then set your 
 ### Acknowledgements
 
 - Thank you to Neel Nanda for being the (afaik) first person to upload their Crosscoder code. A lot of other implementations have been written based on his.
-- Thank you to Claude Code for writing the visualization code that I didn't want to touch
-- Thank you to Callum McDougall for the SAE_VIS repo + code! 
+- Thank you to Claude code for adapting [SAE_VIS](https://github.com/callummcdougall/sae_vis) to work with my crosscoder!
