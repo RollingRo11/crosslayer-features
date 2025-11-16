@@ -1,15 +1,21 @@
+import math
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import NamedTuple
+
+import einops
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
-from dataclasses import dataclass
-import math
-from typing import NamedTuple
-from nnsight import LanguageModel
-import einops
 from datasets import load_dataset
-from pathlib import Path
-import wandb
+from dotenv import load_dotenv
+from nnsight import LanguageModel
+from torch.nn import functional as F
 from torch.nn.utils import clip_grad_norm_
+
+import wandb
+
+load_dotenv()
 
 
 @dataclass
@@ -100,8 +106,8 @@ class Crosscoder_Model(nn.Module):
             self.resid: int = 768
             self.num_layers: int = 12
         elif cfg.model == "gemma2-2b":
-            self.resid = 2048
-            self.num_layers = 32
+            self.resid = 2304
+            self.num_layers = 26
         else:
             raise ValueError(f"Model {cfg.model} not supported")
 
@@ -210,8 +216,17 @@ class Buffer:
         self.model = model
         self.cfg = cfg
         self.modelcfg = self.model.config.to_dict()
-        self.num_layers = self.modelcfg["n_layer"]
-        self.resid = self.modelcfg["n_embd"]
+
+        # Handle different config keys for different models
+        if cfg.model == "gpt2":
+            self.num_layers = self.modelcfg["n_layer"]
+            self.resid = self.modelcfg["n_embd"]
+        elif cfg.model == "gemma2-2b":
+            self.num_layers = self.modelcfg["num_hidden_layers"]
+            self.resid = self.modelcfg["hidden_size"]
+        else:
+            raise ValueError(f"Model {cfg.model} not supported")
+
         self.context = 1024
 
         self.buffer_size = self.cfg.batch_size * self.cfg.buffer_mult
@@ -266,10 +281,19 @@ class Buffer:
         tokens = self.get_tokens(n_samples).to(self.cfg.device)
 
         with self.model.trace(tokens):
-            layer_acts = [
-                self.model.transformer.h[i].output[0].save()
-                for i in range(self.num_layers)
-            ]
+            # Handle different model architectures
+            if self.cfg.model == "gpt2":
+                layer_acts = [
+                    self.model.transformer.h[i].output[0].save()
+                    for i in range(self.num_layers)
+                ]
+            elif self.cfg.model == "gemma2-2b":
+                layer_acts = [
+                    self.model.model.layers[i].output[0].save()
+                    for i in range(self.num_layers)
+                ]
+            else:
+                raise ValueError(f"Model {self.cfg.model} not supported")
 
         all_acts = torch.stack(layer_acts, dim=2)
 
