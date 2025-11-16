@@ -3,7 +3,7 @@ Repo to train and visualize single-model crosscoders!
 
 [Cross layer superposition](https://transformer-circuits.pub/2024/crosscoders/index.html) is a super interesting phenomenon! I wanted to build out a repo that allowed me to both train and visualize crosscoders in order to try to understand some of the weird things that happen to features as they're co-developed by multiple layers. 
 
-**Currently, this repo only supports GPT2 (more support coming very soon!)**
+**Currently, this repo only supports GPT2 (support for more models coming very soon!)**
 
 A lot of the underlying crosscoder structure is from this [repo](https://github.com/neelnanda-io/Crosscoders/tree/main) from Neel Nanda!
 (It's been adapted to use the NNSight library and more tailored to the research use here).
