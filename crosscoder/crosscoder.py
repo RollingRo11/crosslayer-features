@@ -22,27 +22,28 @@ load_dotenv()
 class cc_config:
     # crosscoder config:
     model: str = "gpt2"
-    ae_dim: int = 2**15
-    model_batch: int = 128
+    ae_dim: int = 2**14  # Reduced from 2**15 (16K instead of 32K)
+    model_batch: int = 64  # Reduced from 128
     init_norm: float = 0.008
 
     # Train
     optim: str = "AdamW"
-    lr: float = 5e-5
+    lr: float = 2e-4  # Increased from 5e-5 for smaller effective batch
     steps: int = 50000
-    batch_size: int = 2048
+    batch_size: int = 256  # Reduced from 2048
     warmup_steps: int = 5000
     l1_coeff: float = 0.8
+    gradient_accumulation_steps: int = 8  # New: effective batch = 2048
 
     # wandb
     log_interval: int = 100
     save_interval: int = 10000
 
     # buffer
-    buffer_mult: int = 64
+    buffer_mult: int = 8  # Reduced from 64
 
     # other
-    dtype = torch.float32
+    dtype = torch.bfloat16  # Changed from torch.float32
     device: str = "cuda"
     seed: int = 721
 
@@ -227,7 +228,7 @@ class Buffer:
         else:
             raise ValueError(f"Model {cfg.model} not supported")
 
-        self.context = 1024
+        self.context = 512  # Reduced from 1024 for memory efficiency
 
         self.buffer_size = self.cfg.batch_size * self.cfg.buffer_mult
         self.buffer = torch.zeros(
@@ -338,7 +339,10 @@ class Trainer:
         if cfg.model == "gpt2":
             self.lm = LanguageModel("openai-community/gpt2", device_map=cfg.device)
         elif cfg.model == "gemma2-2b":
-            self.lm = LanguageModel("google/gemma-2-2b", device_map=cfg.device)
+            # Load in 8-bit for memory efficiency
+            self.lm = LanguageModel(
+                "google/gemma-2-2b", device_map=cfg.device, load_in_8bit=True
+            )
         else:
             raise ValueError(f"Model {cfg.model} not supported")
 
@@ -368,6 +372,7 @@ class Trainer:
         wandb.watch(self.crosscoder, log="all", log_freq=self.cfg.log_interval)
 
         self.step = 0
+        self.accumulation_counter = 0
 
     def _get_next_run_dir(self) -> Path:
         """Find the next available run_n directory"""
@@ -431,11 +436,23 @@ class Trainer:
             + self.cfg.l_p * loss_out.preact_loss
         )
 
-        self.optimizer.zero_grad()
+        # Scale loss for gradient accumulation
+        loss = loss / self.cfg.gradient_accumulation_steps
+
+        # Zero gradients only on first accumulation step
+        if self.accumulation_counter == 0:
+            self.optimizer.zero_grad()
+
         loss.backward()
-        clip_grad_norm_(self.crosscoder.parameters(), max_norm=1.0)
-        self.optimizer.step()
-        self.scheduler.step()
+
+        self.accumulation_counter += 1
+
+        # Only update parameters after accumulating enough gradients
+        if self.accumulation_counter >= self.cfg.gradient_accumulation_steps:
+            clip_grad_norm_(self.crosscoder.parameters(), max_norm=1.0)
+            self.optimizer.step()
+            self.scheduler.step()
+            self.accumulation_counter = 0
 
         with torch.no_grad():
             acts = self.crosscoder.encode(batch)
@@ -443,7 +460,7 @@ class Trainer:
             dead_features = self.calculate_dead_features(acts)
 
         return {
-            "losses/loss": loss.item(),
+            "losses/loss": loss.item() * self.cfg.gradient_accumulation_steps,
             "losses/recon_loss": loss_out.recon_loss.item(),
             "losses/sparsity_loss": loss_out.sparsity_loss.item(),
             "losses/preact_loss": self.cfg.l_p * loss_out.preact_loss.item(),
