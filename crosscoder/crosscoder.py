@@ -21,7 +21,7 @@ load_dotenv()
 @dataclass
 class cc_config:
     # crosscoder config:
-    model: str = "gpt2"
+    model: str = "gemma2-2b"
     ae_dim: int = 2**14  # Reduced from 2**15 (16K instead of 32K)
     model_batch: int = 64  # Reduced from 128
     init_norm: float = 0.008
