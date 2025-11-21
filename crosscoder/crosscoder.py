@@ -111,6 +111,8 @@ class Crosscoder_Model(nn.Module):
         else:
             raise ValueError(f"Model {cfg.model} not supported")
 
+        self.ae_dim = cfg.ae_dim
+
         self.W_enc = nn.Parameter(
             torch.empty(self.num_layers, self.resid, self.ae_dim, dtype=self.dtype)
         )
